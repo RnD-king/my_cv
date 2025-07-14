@@ -262,7 +262,7 @@ class LineListenerNode(Node):
             res = 3 # 우회전 해라
             angle = line_angle
         elif stable_curve == "Turn Left" and stable_curve == "Turn Right":
-            res = 4
+            res = 4 # 징검다리 가라
 
         #---------------------------------------------------------------------------------------------------------------라인 판단 끝
 
