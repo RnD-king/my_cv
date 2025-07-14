@@ -26,12 +26,14 @@ class LineListenerNode(Node):
         self.bridge = CvBridge()
 
         # 파라미터 선언
+        self.declare_parameter("limit_x", 10)
         self.declare_parameter("max_len", 30)
-        self.declare_parameter("delta_s", 15)
+        self.declare_parameter("delta_s", 15) # 커브 판단할 때
         self.declare_parameter("vertical", 75)
         self.declare_parameter("horizonal", 15)
 
         # 파라미터 적용
+        self.limit_x = self.get_parameter("limit_x").value
         self.max_len = self.get_parameter("max_len").value
         self.delta_s = self.get_parameter("delta_s").value
         self.vertical = self.get_parameter("vertical").value
@@ -55,6 +57,11 @@ class LineListenerNode(Node):
 
     def parameter_callback(self, params):
         for param in params:
+            if param.name == "limit_x":
+                if param.value > 0 and param.value < 64:
+                    self.limit_x = param.value
+                else:
+                    return SetParametersResult(successful=False)
             if param.name == "max_len":
                 if param.value > 0:
                     self.max_len = param.value
@@ -111,22 +118,23 @@ class LineListenerNode(Node):
 
         roi = cv_image[roi_y_start:roi_y_end, roi_x_start:roi_x_end]
 
-#---------------------------------------------------------------라인 판단 시작  << 최소자승 직선 근사  << 얘 좀 이상함
+#---------------------------------------------------------------1차 판단 시작  << 최소자승 직선 근사  << 얘 좀 이상함
 
+        # 1. 위치 판단
         sum = 0
-
         if self.candidates:
             for i in range(len(self.candidates)):
                 sum += self.candidates[i][0]
 
             avg_x = float(sum / len(self.candidates))
-            if avg_x > (roi_x_end - roi_x_start) / 2 + 10:
+            if avg_x > (roi_x_end - roi_x_start) / 2 + self.limit_x:
                 self.out_text = "Out Left"
-            elif avg_x < (roi_x_end - roi_x_start) / 2 - 10:
+            elif avg_x < (roi_x_end - roi_x_start) / 2 - self.limit_x:
                 self.out_text = "Out Right"
             else:
                 self.out_text = "Straight"
             
+        # 2. 방향 판단
         if len(self.candidates) >= 3:  # 1. 3개 이상일 때: 맨 위 점 제외하고 직선 근사        
             tip_x, tip_y, tip_lost = self.candidates[-1] # 그 중 가장 위의 점 = 새로 탐지된 점
             if tip_lost > 0:
@@ -246,12 +254,15 @@ class LineListenerNode(Node):
         else: # 감지 실패
             self.curve_text = "Miss"
             self.tilt_text = "Miss"
+            self.out_text = "Miss"
             line_angle = 0
 
         self.recent_curve.append(self.curve_text)
         self.recent_tilt.append(self.tilt_text)
         stable_curve = Counter(self.recent_curve).most_common(1)[0][0] if self.recent_curve else "Miss"  # 최빈값에 맞게 커브 판단  >> 후에 이거로 상태함수 넣어도 됨 / fsm
         stable_tilt = Counter(self.recent_tilt).most_common(1)[0][0] if self.recent_tilt else "Miss"
+
+        #-------------------------------------------------------------------------------------------------------------- 1차 판단 끝
 
         if stable_curve == "Straight" and stable_tilt == "Straight" and self.out_text == "Straight":
             res = 1 # 직진
@@ -262,11 +273,13 @@ class LineListenerNode(Node):
             res = 3 # 우회전 해라
             angle = line_angle
         elif stable_curve == "Turn Left" or stable_curve == "Turn Right":
-            res = 4 # 징검다리 가라
+            res = 4
 
-        #---------------------------------------------------------------------------------------------------------------라인 판단 끝
+        # 여기에 퍼블리시
 
-        # 방향 텍스트 출력
+        #--------------------------------------------------------------------------------------------------------------- 2차 판단 끝
+
+        # 판단 텍스트 출력
         cv2.putText(cv_image, f"Rotate: {line_angle:.2f}", (10, 60),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2, cv2.LINE_AA)
         cv2.putText(cv_image, f"Tilt: {stable_tilt}", (10, 90),
@@ -278,6 +291,8 @@ class LineListenerNode(Node):
 
         cv_image[roi_y_start:roi_y_end, roi_x_start:roi_x_end] = roi  # 전체화면
         cv2.rectangle(cv_image, (roi_x_start - 1, roi_y_start - 1), (roi_x_end + 1, roi_y_end), (0, 255, 0), 1) # ROI 구역 표시
+        cv2.line(cv_image, (int(screen_w / 2) - self.limit_x, roi_y_start), (int(screen_w / 2) - self.limit_x, roi_y_end), (255, 22, 255), 1)
+        cv2.line(cv_image, (int(screen_w / 2) + self.limit_x, roi_y_start), (int(screen_w / 2) + self.limit_x, roi_y_end), (255, 22, 255), 1)
         
         #-------------------------------------------------------------------------------------------------- 프레임 처리 시간 측정
 
