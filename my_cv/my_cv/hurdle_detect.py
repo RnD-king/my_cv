@@ -119,6 +119,8 @@ class HurdleDetectorNode(Node):
 
         self.add_on_set_parameters_callback(self.parameter_callback)
 
+        self.set_roi(self.hurdle_near_by)
+
         self.lower_lab = np.array([self.l_low, self.a_low, self.b_low ], dtype=np.uint8) # 색공간 미리 선언
         self.upper_lab = np.array([self.l_high, self.a_high, self.b_high], dtype=np.uint8)
         self.lab = None      # lab 미리 선언 
@@ -223,154 +225,155 @@ class HurdleDetectorNode(Node):
             contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
             best_cnt = None
-            best_cy_hurdle = best_h_hurdle = None
+            best_cx_hurdle = best_cy_hurdle = best_h_hurdle = None
             best_angle = None
-            best_vx = best_vy = best_y0 = None
+            best_vx = best_vy = None
             best_w_hurdle = 100
             best_ratio = 0.5
 
-            if self.hurdle_near_by:
-                for cnt in contours:
-                    area = cv2.contourArea(cnt)
-                    if area > 300:
-                        (rcx, rcy), (rw, rh), rang = cv2.minAreaRect(cnt)
-                        if rw < rh:
-                            rw, rh = rh, rw 
+            # if self.hurdle_near_by:
+            #     for cnt in contours:
+            #         area = cv2.contourArea(cnt)
+            #         if area > 300:
+            #             (rcx, rcy), (rw, rh), rang = cv2.minAreaRect(cnt)
+            #             if rw < rh:
+            #                 rw, rh = rh, rw 
+            #             rect_area = rw * rh
+            #             fill_ratio = area / rect_area
+            #             if best_ratio < fill_ratio:
+            #                 best_ratio = fill_ratio
+            #                 best_cnt = cnt
+            #                 best_angle = abs(rang)
+            #                 best_box = cv2.boxPoints(((rcx, rcy), (rw, rh), rang)).astype(np.int32) + np.array([self.roi_x_start, self.roi_y_start])
+            #                 best_dy = (zandi_y - rcy + self.roi_y_start) - rh / 2
+
+            #     if best_cnt is not None:
+            #         self.hurdle_lost = 0
+
+            #         # 정보 저장
+            #         self.last_angle = best_angle
+            #         self.last_dy = best_dy
+            #         self.last_box = best_box
+        
+            #         self.hurdle_color = (0, 255, 0)
+            #         self.rect_color = (0, 255, 0)
+            #         is_hurdle_valid = True
+
+            #         cv2.drawContours(frame, [best_box], 0, self.hurdle_color, 2)
+
+            #         self.get_logger().info(f"[Hurdle] Near! | dis= {best_dy:.1f}, angle= {best_angle:.1f}")
+
+            #     else:
+            #         if self.hurdle_lost < 3 and self.last_box is not None:
+            #             self.hurdle_lost += 1
+
+            #             # 정보 저장
+            #             best_angle = self.last_angle
+            #             best_dy = self.last_dy
+            #             best_box = self.last_box
+            
+            #             self.hurdle_color = (255, 0, 0)
+            #             self.rect_color = (255, 0, 0)
+            #             is_hurdle_valid = True
+
+            #             cv2.drawContours(frame, [best_box], 0, self.hurdle_color, 2)
+
+            #             self.get_logger().info(f"[Hurdle] Lost but near! | dis= {best_dy:.1f}, angle= {best_angle:.1f}")
+
+            #         else:
+            #             self.hurdle_lost = 3
+
+            #             best_angle = best_dy = best_box = None
+            #             self.last_angle = self.last_dy = self.last_box = None                 
+
+            #             self.rect_color = (0, 0, 255)
+            #             is_hurdle_valid = False
+                        
+            #             self.get_logger().info(f"[Hurdle] Miss!")
+                            
+            # else: 
+            for cnt in contours:
+                area = cv2.contourArea(cnt)
+                if area > 500:   # 1. 너무 작은 건 제외
+                    (rcx, rcy), (rw, rh), rang = cv2.minAreaRect(cnt) # 외접 사각형 그리고
+                    rang *= -1  # minAreaRect는 짧은 변과 x축 기준이고 0 ~ -90 / 우린 긴 변과 y축 기준에 0 ~ 90이 필요함  << 외접사각형기준
+                    if rw < rh:
+                        rw, rh = rh, rw # 난 h가 짧아야 한다
+                    aspect = rw / rh
+                    if aspect > 4.0:     # 2. 가로세로 비율            
                         rect_area = rw * rh
                         fill_ratio = area / rect_area
-                        if best_ratio < fill_ratio:
-                            best_ratio = fill_ratio
-                            best_cnt = cnt
-                            best_angle = abs(rang)
-                            best_box = cv2.boxPoints(((rcx, rcy), (rw, rh), rang)).astype(np.int32) + np.array([self.roi_x_start, self.roi_y_start])
-                            best_dy = (zandi_y - rcy + self.roi_y_start) - rh / 2
+                        if best_ratio <= fill_ratio:  # 3. 면적 비율                               
+                            if rw > best_w_hurdle: # 4. 그 중에서 가로가 제일 긴 박스
+                                vx, vy, x0, y0 = cv2.fitLine(cnt, cv2.DIST_L2, 0, 0.01, 0.01)
+                                vx = float(vx); vy = float(vy); x0 = float(x0); y0 = float(y0)
+                                ang = -math.degrees(math.atan2(-vy, vx))
+                                if ang >= 90:
+                                    ang -= 180  # <<< 컨투어 기준
+                                
+                                best_cnt = cnt
+                                best_cx_hurdle = x0 + self.roi_x_start
+                                best_cy_hurdle = y0 + self.roi_y_start
+                                best_w_hurdle = int(rw) # 필없
+                                best_h_hurdle = float(rh) 
+                                best_angle = float(ang)
+                                best_vx, best_vy = vx, vy
 
-                if best_cnt is not None:
-                    self.hurdle_lost = 0
+            if best_cnt is not None:
+                self.hurdle_lost = 0
 
-                    # 정보 저장
-                    self.last_angle = best_angle
-                    self.last_dy = best_dy
-                    self.last_box = best_box
-        
-                    self.hurdle_color = (0, 255, 0)
-                    self.rect_color = (0, 255, 0)
-                    is_hurdle_valid = True
+                # 법선 
+                best_dy = (zandi_y - best_cy_hurdle) * math.cos(math.radians(best_angle)) - best_h_hurdle / 2
 
-                    cv2.drawContours(frame, [best_box], 0, self.hurdle_color, 2)
+                # 허들 직선 표시
+                left_y = int(round((self.roi_x_start - best_cx_hurdle) * best_vy / (best_vx + 0.00001) + best_cy_hurdle))
+                right_y = int(round((self.roi_x_end - best_cx_hurdle) * best_vy / (best_vx + 0.00001) + best_cy_hurdle))
+                cv2.line(frame, (self.roi_x_start, left_y), (self.roi_x_end, right_y), self.hurdle_color, 2)
+                cv2.line(frame, (zandi_x, zandi_y), (int(round(zandi_x - math.sin(math.radians(best_angle)) * best_dy)), int(round(zandi_y - math.cos(math.radians(best_angle)) * best_dy))), (0, 0, 255), 2)
 
-                    self.get_logger().info(f"[Hurdle] Near! | dis= {best_dy:.1f}, angle= {best_angle:.1f}")
+                # 정보 저장
+                self.last_cy_hurdle = best_cy_hurdle
+                self.last_angle = best_angle
+                self.last_left_y = left_y
+                self.last_right_y = right_y
+                self.last_dy = best_dy
+    
+                self.hurdle_color = (0, 255, 0)
+                self.rect_color = (0, 255, 0)
+                is_hurdle_valid = True
 
-                else:
-                    if self.hurdle_lost < 3 and self.last_box is not None:
-                        self.hurdle_lost += 1
+                self.get_logger().info(f"[Hurdle] Found! | dis= {best_dy:.1f}, angle= {best_angle:.1f}, cy= {best_cy_hurdle}")
 
-                        # 정보 저장
-                        best_angle = self.last_angle
-                        best_dy = self.last_dy
-                        best_box = self.last_box
+            else:
+                if self.hurdle_lost < 3 and self.last_cy_hurdle is not None:
+                    self.hurdle_lost += 1
             
-                        self.hurdle_color = (255, 0, 0)
-                        self.rect_color = (255, 0, 0)
-                        is_hurdle_valid = True
+                    best_cy_hurdle = self.last_cy_hurdle
+                    best_angle = self.last_angle
+                    left_y = self.last_left_y
+                    right_y = self.last_right_y
+                    best_dy = self.last_dy
 
-                        cv2.drawContours(frame, [best_box], 0, self.hurdle_color, 2)
-
-                        self.get_logger().info(f"[Hurdle] Lost but near! | dis= {best_dy:.1f}, angle= {best_angle:.1f}")
-
-                    else:
-                        self.hurdle_lost = 3
-
-                        best_angle = best_dy = best_box = None
-                        self.last_angle = self.last_dy = self.last_box = None                 
-
-                        self.rect_color = (0, 0, 255)
-                        is_hurdle_valid = False
-                        
-                        self.get_logger().info(f"[Hurdle] Miss!")
-                            
-            else: 
-                for cnt in contours:
-                    area = cv2.contourArea(cnt)
-                    if area > 500:   # 1. 너무 작은 건 제외
-                        (rcx, rcy), (rw, rh), rang = cv2.minAreaRect(cnt) # 외접 사각형 그리고
-                        rang *= -1  # minAreaRect는 짧은 변과 x축 기준이고 0 ~ -90 / 우린 긴 변과 y축 기준에 0 ~ 90이 필요함  << 외접사각형기준
-                        if rw < rh:
-                            rw, rh = rh, rw # 난 h가 짧아야 한다
-                        aspect = rw / rh
-                        if aspect > 4.0:     # 2. 가로세로 비율            
-                            rect_area = rw * rh
-                            fill_ratio = area / rect_area
-                            if 0.5 <= fill_ratio:  # 3. 면적 비율                               
-                                if rw > best_w_hurdle: # 4. 그 중에서 가로가 제일 긴 박스
-                                    vx, vy, x0, y0 = cv2.fitLine(cnt, cv2.DIST_L2, 0, 0.01, 0.01)
-                                    vx = float(vx); vy = float(vy); x0 = float(x0); y0 = float(y0)
-                                    ang = -math.degrees(math.atan2(-vy, vx))
-                                    if ang >= 90:
-                                        ang -= 180  # <<< 컨투어 기준
-                                    
-                                    best_cnt = cnt
-                                    best_cy_hurdle = y0 + self.roi_y_start
-                                    best_w_hurdle = int(rw) # 필없
-                                    best_h_hurdle = float(rh) 
-                                    best_angle = float(ang)
-                                    best_vx, best_vy = vx, vy
-
-                if best_cnt is not None:
-                    self.hurdle_lost = 0
-
-                    # 법선 
-                    best_dy = (zandi_y - best_cy_hurdle) * math.cos(math.radians(best_angle)) - best_h_hurdle / 2
-
-                    # 허들 직선 표시
-                    left_y = int(round((self.roi_x_start - x0) * best_vy / (best_vx + 0.00001) + best_y0 + self.roi_y_start))
-                    right_y = int(round((self.roi_x_end - x0) * best_vy / (best_vx + 0.00001) + best_y0 + self.roi_y_start))
                     cv2.line(frame, (self.roi_x_start, left_y), (self.roi_x_end, right_y), self.hurdle_color, 2)
-                    cv2.line(frame, (zandi_x, zandi_y), (int(round(zandi_x - math.sin(math.radians(best_angle)) * best_dy)), int(round(zandi_y - math.cos(math.radians(best_angle)) * best_dy))), (0, 0, 255), 2)
 
-                    # 정보 저장
-                    self.last_cy_hurdle = best_cy_hurdle
-                    self.last_angle = best_angle
-                    self.last_left_y = left_y
-                    self.last_right_y = right_y
-                    self.last_dy = best_dy
-        
-                    self.hurdle_color = (0, 255, 0)
-                    self.rect_color = (0, 255, 0)
+                    self.hurdle_color = (255, 0, 0)
+                    self.rect_color = (255, 0, 0)
                     is_hurdle_valid = True
-
-                    self.get_logger().info(f"[Hurdle] Found! | dis= {best_dy:.1f}, angle= {best_angle:.1f}, cy= {best_cy_hurdle}")
+                    
+                    self.get_logger().info(f"[Hurdle] Lost! | dis= {best_dy:.1f}, angle= {best_angle:.1f}, cy= {best_cy_hurdle}")
 
                 else:
-                    if self.hurdle_lost < 3 and self.last_cy_hurdle is not None:
-                        self.hurdle_lost += 1
-                
-                        best_cy_hurdle = self.last_cy_hurdle
-                        best_angle = self.last_angle
-                        left_y = self.last_left_y
-                        right_y = self.last_right_y
-                        best_dy = self.last_dy
+                    self.hurdle_lost = 3
 
-                        cv2.line(frame, (self.roi_x_start, left_y), (self.roi_x_end, right_y), self.hurdle_color, 2)
+                    best_cy_hurdle = best_angle = best_dy = None
+                    left_y = right_y = None
+                    self.last_cy_hurdle = self.last_angle = self.last_dy = None
+                    self.last_left_y = self.last_right_y = None                    
 
-                        self.hurdle_color = (255, 0, 0)
-                        self.rect_color = (255, 0, 0)
-                        is_hurdle_valid = True
-                        
-                        self.get_logger().info(f"[Hurdle] Lost! | dis= {best_dy:.1f}, angle= {best_angle:.1f}, cy= {best_cy_hurdle}")
-
-                    else:
-                        self.hurdle_lost = 3
-
-                        best_cy_hurdle = best_angle = best_dy = None
-                        left_y = right_y = None
-                        self.last_cy_hurdle = self.last_angle = self.last_dy = None
-                        self.last_left_y = self.last_right_y = None                    
-
-                        self.rect_color = (0, 0, 255)
-                        is_hurdle_valid = False
-                        
-                        self.get_logger().info(f"[Hurdle] Miss!")
+                    self.rect_color = (0, 0, 255)
+                    is_hurdle_valid = False
+                    
+                    self.get_logger().info(f"[Hurdle] Miss!")
 
             self.frames_left -= 1
             self.hurdle_valid_list.append(is_hurdle_valid)
@@ -384,6 +387,7 @@ class HurdleDetectorNode(Node):
                 
                 if self.jump:
                     res = 20
+                    avg_angle = 0
                     self.get_logger().info(f"[Hurdle] Jump!") # 일단 임시로 # self 지정하셈
                     self.jump = False
                     self.is_hurdle = False
