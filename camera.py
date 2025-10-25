@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🎛️ RealSense Viewer (Fixed 840x780, Pause with Space)
+🎛️ RealSense Viewer (Fixed 840x780, Auto WB & EXP toggle + Pause)
  - 4:3 비율 유지 (640x480)
- - 숫자 입력으로 파라미터 제어
+ - 숫자 입력으로 수동 제어
+ - Auto Exposure / Auto White Balance 토글 지원
  - Spacebar로 영상 일시정지 / 재시작
  - 클릭 시 HSV/LAB 출력
 """
@@ -27,7 +28,7 @@ pipeline.start(config)
 device = pipeline.get_active_profile().get_device()
 color_sensor = device.query_sensors()[1]
 
-# 수동 모드 기본 설정
+# 기본 수동 설정
 color_sensor.set_option(rs.option.enable_auto_exposure, 0)
 color_sensor.set_option(rs.option.enable_auto_white_balance, 0)
 
@@ -108,6 +109,32 @@ for name, opt, mn, mx in OPTIONS:
     make_entry(frame_params, name, opt, mn, mx)
 
 # ============================================================
+# ✅ 자동 옵션 (Auto WB / Auto Exposure)
+# ============================================================
+auto_frame = ttk.Frame(frame_params)
+auto_frame.pack(side="left", padx=10)
+
+auto_wb = tk.BooleanVar(value=False)
+auto_exp = tk.BooleanVar(value=False)
+
+def toggle_auto_white():
+    color_sensor.set_option(rs.option.enable_auto_white_balance, float(auto_wb.get()))
+    if auto_wb.get():
+        print("Auto White Balance: ON")
+    else:
+        print("Auto White Balance: OFF")
+
+def toggle_auto_exposure():
+    color_sensor.set_option(rs.option.enable_auto_exposure, float(auto_exp.get()))
+    if auto_exp.get():
+        print("Auto Exposure: ON")
+    else:
+        print("Auto Exposure: OFF")
+
+ttk.Checkbutton(auto_frame, text="Auto WB", variable=auto_wb, command=toggle_auto_white).pack()
+ttk.Checkbutton(auto_frame, text="Auto EXP", variable=auto_exp, command=toggle_auto_exposure).pack()
+
+# ============================================================
 # ✅ 상태 표시 라벨 (Paused / Playing)
 # ============================================================
 status_label = ttk.Label(frame_status, text="Status: Playing", font=("Arial", 11, "bold"))
@@ -142,7 +169,6 @@ def update_frame():
             frame = np.asanyarray(color_frame.get_data())
 
     if frame is not None:
-        # 4:3 비율 유지 (840x630 영역)
         target_w, target_h = 840, 630
         aspect_src = cam_w / cam_h
         aspect_dst = target_w / target_h
