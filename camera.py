@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-RealSense Viewer (Numeric Control Only)
- - 슬라이더 제거, 숫자 입력만으로 카메라 옵션 조정
- - 영상과 조정 패널 완전 분리
- - 창 크기 변경/최대화 시 부드럽게 비율 유지
+🎛️ RealSense Viewer (Fixed 4:3, Numeric Control Only)
+ - RGB 영상 640x480 고정 비율
+ - 창 크기 고정 (리사이징 불가)
+ - 슬라이더 제거, 숫자 입력만
+ - 클릭 시 HSV/LAB 출력
 """
 
 import tkinter as tk
@@ -25,34 +26,35 @@ pipeline.start(config)
 
 device = pipeline.get_active_profile().get_device()
 color_sensor = device.query_sensors()[1]
-
-# 수동 모드 기본 설정
 color_sensor.set_option(rs.option.enable_auto_exposure, 0)
 color_sensor.set_option(rs.option.enable_auto_white_balance, 0)
 
 # ============================================================
-# ✅ Tkinter 기본 설정
+# ✅ Tkinter 창 설정 (리사이즈 불가, 고정)
 # ============================================================
 root = tk.Tk()
-root.title("🎛️ RealSense RGB Control (Numeric Only)")
-root.geometry("960x720")
-root.minsize(800, 600)
+root.title("🎛️ RealSense RGB Control (Fixed 4:3)")
+root.geometry("2400x1350")    # 고정된 넓은 창
+root.resizable(False, False)  # 크기 변경 금지
 
-# 상단: 영상 / 하단: 제어
+# 프레임 구성
 top_frame = ttk.Frame(root)
 top_frame.pack(fill="both", expand=True)
 
 bottom_frame = ttk.Frame(root)
-bottom_frame.pack(fill="x", padx=10, pady=5)
+bottom_frame.pack(fill="x", pady=10)
 
 # ============================================================
-# ✅ 영상 표시 라벨
+# ✅ 영상 라벨 (640x480 비율 유지)
 # ============================================================
+canvas_width = 1600
+canvas_height = int(canvas_width * 3 / 4)  # 4:3 비율
+
 image_label = ttk.Label(top_frame)
-image_label.pack(fill="both", expand=True)
+image_label.place(relx=0.5, rely=0.5, anchor="center", width=canvas_width, height=canvas_height)
 
 # ============================================================
-# ✅ 조절 가능한 옵션 리스트
+# ✅ 제어 가능한 옵션 리스트
 # ============================================================
 OPTIONS = [
     ("Exposure", rs.option.exposure, 1, 1000),
@@ -66,14 +68,12 @@ OPTIONS = [
     ("WhiteBalance", rs.option.white_balance, 2800, 6500),
 ]
 
-# ============================================================
-# ✅ 숫자 입력 필드 생성
-# ============================================================
 entry_vars = {}
 
 def make_entry(parent, name, option, minv, maxv):
+    """숫자 입력 전용 옵션 컨트롤"""
     frame = ttk.Frame(parent)
-    frame.pack(side="left", padx=10)
+    frame.pack(side="left", padx=15)
 
     ttk.Label(frame, text=name).pack()
     var = tk.DoubleVar()
@@ -83,7 +83,7 @@ def make_entry(parent, name, option, minv, maxv):
     except Exception:
         var.set((minv + maxv) / 2)
 
-    entry = ttk.Entry(frame, textvariable=var, width=8, justify="center")
+    entry = ttk.Entry(frame, textvariable=var, width=10, justify="center")
     entry.pack()
 
     def apply_value(event=None):
@@ -99,15 +99,13 @@ def make_entry(parent, name, option, minv, maxv):
     entry.bind("<Return>", apply_value)
     entry_vars[name] = var
 
+# 입력칸 생성
 for name, opt, mn, mx in OPTIONS:
     make_entry(bottom_frame, name, opt, mn, mx)
 
-# ============================================================
-# ✅ Auto 옵션 (체크박스)
-# ============================================================
+# Auto 옵션
 auto_frame = ttk.Frame(bottom_frame)
-auto_frame.pack(side="left", padx=10)
-
+auto_frame.pack(side="left", padx=20)
 auto_wb = tk.BooleanVar(value=False)
 auto_exp = tk.BooleanVar(value=False)
 
@@ -121,7 +119,7 @@ ttk.Checkbutton(auto_frame, text="Auto WB", variable=auto_wb, command=toggle_aut
 ttk.Checkbutton(auto_frame, text="Auto EXP", variable=auto_exp, command=toggle_auto_exposure).pack()
 
 # ============================================================
-# ✅ 프레임 업데이트 루프 (비율 유지)
+# ✅ 영상 업데이트 루프 (비율 고정)
 # ============================================================
 def update_frame():
     global frame
@@ -132,28 +130,9 @@ def update_frame():
         return
 
     frame = np.asanyarray(color_frame.get_data())
-    label_w, label_h = image_label.winfo_width(), image_label.winfo_height()
-    if label_w <= 1 or label_h <= 1:
-        label_w, label_h = width, height
+    resized = cv2.resize(frame, (canvas_width, canvas_height), interpolation=cv2.INTER_LINEAR)
 
-    # 비율 유지 리사이즈 (Center crop)
-    aspect_src = width / height
-    aspect_dst = label_w / label_h
-    if aspect_dst > aspect_src:
-        new_h = label_h
-        new_w = int(new_h * aspect_src)
-    else:
-        new_w = label_w
-        new_h = int(new_w / aspect_src)
-
-    resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
-    # 중앙 정렬용 패딩
-    canvas = np.zeros((label_h, label_w, 3), dtype=np.uint8)
-    y0 = (label_h - new_h) // 2
-    x0 = (label_w - new_w) // 2
-    canvas[y0:y0+new_h, x0:x0+new_w] = resized
-
-    image = Image.fromarray(cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB))
+    image = Image.fromarray(cv2.cvtColor(resized, cv2.COLOR_BGR2RGB))
     imgtk = ImageTk.PhotoImage(image=image)
     image_label.imgtk = imgtk
     image_label.configure(image=imgtk)
@@ -166,9 +145,8 @@ def update_frame():
 def on_click(event):
     if frame is None:
         return
-    label_w, label_h = image_label.winfo_width(), image_label.winfo_height()
-    x = int(event.x * width / label_w)
-    y = int(event.y * height / label_h)
+    x = int(event.x * width / canvas_width)
+    y = int(event.y * height / canvas_height)
     if 0 <= x < width and 0 <= y < height:
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         lab = cv2.cvtColor(frame, cv2.COLOR_BGR2Lab)
@@ -179,7 +157,7 @@ def on_click(event):
 image_label.bind("<Button-1>", on_click)
 
 # ============================================================
-# ✅ 종료 시 정리
+# ✅ 실행 및 종료 처리
 # ============================================================
 root.after(100, update_frame)
 root.protocol("WM_DELETE_WINDOW", lambda: (pipeline.stop(), root.destroy()))
