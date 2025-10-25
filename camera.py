@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🎛️ RealSense Viewer (Fixed 840x900, Mask with Circular Hue Support)
- - HSV/LAB 마스크 지원
- - H축 원형 (min>max → wraparound)
- - Auto WB / EXP 토글, Pause, HSV/LAB 클릭 출력
+🎛️ RealSense Viewer (Fixed 840x900, White Mask Mode)
+ - HSV/LAB 마스크 지원 (Hue 원형)
+ - 마스크 ON이면 흰색 표시
+ - Auto WB/EXP 토글, Space Pause
 """
 
 import tkinter as tk
@@ -29,10 +29,10 @@ color_sensor.set_option(rs.option.enable_auto_exposure, 0)
 color_sensor.set_option(rs.option.enable_auto_white_balance, 0)
 
 # ============================================================
-# ✅ Tkinter GUI 기본 세팅
+# ✅ Tkinter GUI
 # ============================================================
 root = tk.Tk()
-root.title("🎛️ RealSense RGB Control (Mask Hue Circular)")
+root.title("🎛️ RealSense RGB Control (White Mask Mode)")
 root.geometry("840x900")
 root.resizable(False, False)
 root.attributes('-fullscreen', False)
@@ -54,7 +54,7 @@ image_label = ttk.Label(frame_video)
 image_label.place(relx=0.5, rely=0.5, anchor="center")
 
 # ============================================================
-# ✅ 기본 파라미터 입력
+# ✅ 일반 설정 (노출, 밝기 등)
 # ============================================================
 OPTIONS = [
     ("Exposure", rs.option.exposure, 1, 1000),
@@ -110,7 +110,7 @@ ttk.Checkbutton(auto_frame, text="Auto WB", variable=auto_wb, command=toggle_aut
 ttk.Checkbutton(auto_frame, text="Auto EXP", variable=auto_exp, command=toggle_auto_exposure).pack()
 
 # ============================================================
-# ✅ Mask UI (HSV/LAB + 범위 입력)
+# ✅ Mask 설정 (HSV/LAB + 범위 입력)
 # ============================================================
 mask_on = tk.BooleanVar(value=False)
 mask_mode = tk.StringVar(value="HSV")
@@ -143,41 +143,34 @@ ttk.Radiobutton(mode_frame, text="HSV", variable=mask_mode, value="HSV").pack(an
 ttk.Radiobutton(mode_frame, text="LAB", variable=mask_mode, value="LAB").pack(anchor="w")
 
 # ============================================================
-# ✅ 상태 라벨 + Spacebar 일시정지
+# ✅ 상태 표시 + Space Pause
 # ============================================================
 status_label = ttk.Label(frame_status, text="Status: Playing", font=("Arial", 11, "bold"))
 status_label.pack(anchor="center")
-
 paused = False
 def toggle_pause(event=None):
     global paused
     paused = not paused
     status_label.config(text=f"Status: {'Paused' if paused else 'Playing'}")
-
 root.bind("<space>", toggle_pause)
 
 # ============================================================
-# ✅ 마스크 적용 함수 (Hue 원형 대응)
+# ✅ 마스크 적용 함수 (Hue 원형 + 흰색 마스크)
 # ============================================================
 def apply_mask(img):
     if not mask_on.get():
         return img
-
     if mask_mode.get() == "HSV":
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
         h_min, h_max = h_vars[0].get(), h_vars[1].get()
         s_min, s_max = s_vars[0].get(), s_vars[1].get()
         v_min, v_max = v_vars[0].get(), v_vars[1].get()
-
-        # H는 원형(0~180)
         if h_min <= h_max:
             mask_h = cv2.inRange(hsv[:,:,0], h_min, h_max)
         else:
-            # 예: 170~180, 0~10
             mask_h1 = cv2.inRange(hsv[:,:,0], h_min, 180)
             mask_h2 = cv2.inRange(hsv[:,:,0], 0, h_max)
             mask_h = cv2.bitwise_or(mask_h1, mask_h2)
-
         mask_s = cv2.inRange(hsv[:,:,1], s_min, s_max)
         mask_v = cv2.inRange(hsv[:,:,2], v_min, v_max)
         mask = cv2.bitwise_and(mask_h, cv2.bitwise_and(mask_s, mask_v))
@@ -191,7 +184,10 @@ def apply_mask(img):
         mask_b = cv2.inRange(lab[:,:,2], b_min, b_max)
         mask = cv2.bitwise_and(mask_l, cv2.bitwise_and(mask_a, mask_b))
 
-    return cv2.bitwise_and(img, img, mask=mask)
+    # 조건 만족: 흰색, 나머지 검정
+    masked = np.zeros_like(img)
+    masked[mask > 0] = (255, 255, 255)
+    return masked
 
 # ============================================================
 # ✅ 영상 업데이트 루프
@@ -227,7 +223,7 @@ def on_click(event):
         lab = cv2.cvtColor(frame, cv2.COLOR_BGR2Lab)
         h, s, v = hsv[y, x]
         l, a, b = lab[y, x]
-        print(f"(x={x}, y={y}) HSV=({h},{s},{v})  LAB=({l},{a},{b})")
+        print(f"(x={x}, y={y}) HSV=({h},{s},{v}) LAB=({l},{a},{b})")
 
 image_label.bind("<Button-1>", on_click)
 
