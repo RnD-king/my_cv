@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🎛️ RealSense Viewer (Fixed 4:3, Numeric Control Only)
- - RGB 영상 640x480 고정 비율
- - 창 크기 고정 (리사이징 불가)
- - 슬라이더 제거, 숫자 입력만
+🎛️ RealSense Viewer (Video 840x630 + Parameter Panel Below)
+ - 영상: 840x630 고정 크기
+ - 파라미터: 영상 하단에 숫자 입력칸
+ - 창 전체 크기: 840x780 (리사이즈 불가)
  - 클릭 시 HSV/LAB 출력
 """
 
@@ -20,8 +20,8 @@ from PIL import Image, ImageTk
 # ============================================================
 pipeline = rs.pipeline()
 config = rs.config()
-width, height = 640, 480
-config.enable_stream(rs.stream.color, width, height, rs.format.bgr8, 15)
+cam_w, cam_h = 640, 480
+config.enable_stream(rs.stream.color, cam_w, cam_h, rs.format.bgr8, 15)
 pipeline.start(config)
 
 device = pipeline.get_active_profile().get_device()
@@ -30,28 +30,30 @@ color_sensor.set_option(rs.option.enable_auto_exposure, 0)
 color_sensor.set_option(rs.option.enable_auto_white_balance, 0)
 
 # ============================================================
-# ✅ Tkinter 창 설정 (리사이즈 불가, 고정)
+# ✅ Tkinter 설정 (창 고정)
 # ============================================================
 root = tk.Tk()
-root.title("🎛️ RealSense RGB Control (Fixed 4:3)")
-root.geometry("2400x1350")    # 고정된 넓은 창
-root.resizable(False, False)  # 크기 변경 금지
-
-# 프레임 구성
-top_frame = ttk.Frame(root)
-top_frame.pack(fill="both", expand=True)
-
-bottom_frame = ttk.Frame(root)
-bottom_frame.pack(fill="x", pady=10)
+root.title("🎛️ RealSense RGB Control (Video 840x630)")
+root.geometry("840x780")        # 영상(630) + 입력패널(150)
+root.resizable(False, False)
+root.attributes('-fullscreen', False)
 
 # ============================================================
-# ✅ 영상 라벨 (640x480 비율 유지)
+# ✅ 프레임 구성
 # ============================================================
-canvas_width = 1600
-canvas_height = int(canvas_width * 3 / 4)  # 4:3 비율
+frame_video = ttk.Frame(root, width=840, height=630)
+frame_video.pack_propagate(False)  # 내부 위젯 크기에 영향 안 받게
+frame_video.pack()
 
-image_label = ttk.Label(top_frame)
-image_label.place(relx=0.5, rely=0.5, anchor="center", width=canvas_width, height=canvas_height)
+frame_bottom = ttk.Frame(root, height=150)
+frame_bottom.pack(fill="x", pady=5)
+
+# ============================================================
+# ✅ 영상 표시용 라벨 (840x630 고정)
+# ============================================================
+display_w, display_h = 840, 630
+image_label = ttk.Label(frame_video)
+image_label.place(x=0, y=0, width=display_w, height=display_h)
 
 # ============================================================
 # ✅ 제어 가능한 옵션 리스트
@@ -62,7 +64,6 @@ OPTIONS = [
     ("Brightness", rs.option.brightness, -64, 64),
     ("Contrast", rs.option.contrast, 0, 100),
     ("Gamma", rs.option.gamma, 100, 500),
-    ("Hue", rs.option.hue, -180, 180),
     ("Saturation", rs.option.saturation, 0, 100),
     ("Sharpness", rs.option.sharpness, 0, 100),
     ("WhiteBalance", rs.option.white_balance, 2800, 6500),
@@ -71,11 +72,11 @@ OPTIONS = [
 entry_vars = {}
 
 def make_entry(parent, name, option, minv, maxv):
-    """숫자 입력 전용 옵션 컨트롤"""
+    """숫자 입력 전용 컨트롤"""
     frame = ttk.Frame(parent)
-    frame.pack(side="left", padx=15)
+    frame.pack(side="left", padx=8)
 
-    ttk.Label(frame, text=name).pack()
+    ttk.Label(frame, text=name, font=("Arial", 9)).pack()
     var = tk.DoubleVar()
 
     try:
@@ -83,8 +84,8 @@ def make_entry(parent, name, option, minv, maxv):
     except Exception:
         var.set((minv + maxv) / 2)
 
-    entry = ttk.Entry(frame, textvariable=var, width=10, justify="center")
-    entry.pack()
+    entry = ttk.Entry(frame, textvariable=var, width=8, justify="center")
+    entry.pack(pady=2)
 
     def apply_value(event=None):
         try:
@@ -99,13 +100,13 @@ def make_entry(parent, name, option, minv, maxv):
     entry.bind("<Return>", apply_value)
     entry_vars[name] = var
 
-# 입력칸 생성
+# 숫자 입력 필드 생성
 for name, opt, mn, mx in OPTIONS:
-    make_entry(bottom_frame, name, opt, mn, mx)
+    make_entry(frame_bottom, name, opt, mn, mx)
 
 # Auto 옵션
-auto_frame = ttk.Frame(bottom_frame)
-auto_frame.pack(side="left", padx=20)
+auto_frame = ttk.Frame(frame_bottom)
+auto_frame.pack(side="left", padx=10)
 auto_wb = tk.BooleanVar(value=False)
 auto_exp = tk.BooleanVar(value=False)
 
@@ -119,7 +120,7 @@ ttk.Checkbutton(auto_frame, text="Auto WB", variable=auto_wb, command=toggle_aut
 ttk.Checkbutton(auto_frame, text="Auto EXP", variable=auto_exp, command=toggle_auto_exposure).pack()
 
 # ============================================================
-# ✅ 영상 업데이트 루프 (비율 고정)
+# ✅ 영상 업데이트 루프 (840x630에 맞게 리사이즈)
 # ============================================================
 def update_frame():
     global frame
@@ -130,7 +131,7 @@ def update_frame():
         return
 
     frame = np.asanyarray(color_frame.get_data())
-    resized = cv2.resize(frame, (canvas_width, canvas_height), interpolation=cv2.INTER_LINEAR)
+    resized = cv2.resize(frame, (display_w, display_h), interpolation=cv2.INTER_LINEAR)
 
     image = Image.fromarray(cv2.cvtColor(resized, cv2.COLOR_BGR2RGB))
     imgtk = ImageTk.PhotoImage(image=image)
@@ -145,9 +146,9 @@ def update_frame():
 def on_click(event):
     if frame is None:
         return
-    x = int(event.x * width / canvas_width)
-    y = int(event.y * height / canvas_height)
-    if 0 <= x < width and 0 <= y < height:
+    x = int(event.x * cam_w / display_w)
+    y = int(event.y * cam_h / display_h)
+    if 0 <= x < cam_w and 0 <= y < cam_h:
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         lab = cv2.cvtColor(frame, cv2.COLOR_BGR2Lab)
         h, s, v = hsv[y, x]
@@ -157,7 +158,7 @@ def on_click(event):
 image_label.bind("<Button-1>", on_click)
 
 # ============================================================
-# ✅ 실행 및 종료 처리
+# ✅ 종료 처리
 # ============================================================
 root.after(100, update_frame)
 root.protocol("WM_DELETE_WINDOW", lambda: (pipeline.stop(), root.destroy()))
