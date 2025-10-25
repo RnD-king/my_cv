@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🎛️ RealSense Viewer (Fixed 840x900, Mask Toggle + HSV/LAB Range)
- - 4:3 비율 유지 (640x480)
- - Auto WB / EXP 토글
- - Space로 Pause
- - HSV/LAB 기준 색상 마스크
+🎛️ RealSense Viewer (Fixed 840x900, Mask with Circular Hue Support)
+ - HSV/LAB 마스크 지원
+ - H축 원형 (min>max → wraparound)
+ - Auto WB / EXP 토글, Pause, HSV/LAB 클릭 출력
 """
 
 import tkinter as tk
@@ -30,17 +29,14 @@ color_sensor.set_option(rs.option.enable_auto_exposure, 0)
 color_sensor.set_option(rs.option.enable_auto_white_balance, 0)
 
 # ============================================================
-# ✅ Tkinter 창 설정
+# ✅ Tkinter GUI 기본 세팅
 # ============================================================
 root = tk.Tk()
-root.title("🎛️ RealSense RGB Control (Mask Pro Edition)")
+root.title("🎛️ RealSense RGB Control (Mask Hue Circular)")
 root.geometry("840x900")
 root.resizable(False, False)
 root.attributes('-fullscreen', False)
 
-# ============================================================
-# ✅ 프레임 구성
-# ============================================================
 frame_video = ttk.Frame(root, width=840, height=630)
 frame_video.pack_propagate(False)
 frame_video.pack()
@@ -54,14 +50,11 @@ frame_mask.pack(fill="x", pady=3)
 frame_status = ttk.Frame(root, height=30)
 frame_status.pack(fill="x", pady=(0, 5))
 
-# ============================================================
-# ✅ 영상 라벨
-# ============================================================
 image_label = ttk.Label(frame_video)
 image_label.place(relx=0.5, rely=0.5, anchor="center")
 
 # ============================================================
-# ✅ 일반 설정 입력창 (노출, 밝기 등)
+# ✅ 기본 파라미터 입력
 # ============================================================
 OPTIONS = [
     ("Exposure", rs.option.exposure, 1, 1000),
@@ -103,23 +96,21 @@ for name, opt, mn, mx in OPTIONS:
     make_entry(frame_params, name, opt, mn, mx)
 
 # ============================================================
-# ✅ Auto 옵션 (WB / EXP)
+# ✅ Auto 옵션
 # ============================================================
 auto_frame = ttk.Frame(frame_params)
 auto_frame.pack(side="left", padx=10)
 auto_wb = tk.BooleanVar(value=False)
 auto_exp = tk.BooleanVar(value=False)
-
 def toggle_auto_white():
     color_sensor.set_option(rs.option.enable_auto_white_balance, float(auto_wb.get()))
 def toggle_auto_exposure():
     color_sensor.set_option(rs.option.enable_auto_exposure, float(auto_exp.get()))
-
 ttk.Checkbutton(auto_frame, text="Auto WB", variable=auto_wb, command=toggle_auto_white).pack()
 ttk.Checkbutton(auto_frame, text="Auto EXP", variable=auto_exp, command=toggle_auto_exposure).pack()
 
 # ============================================================
-# ✅ Mask 설정 (HSV/LAB 선택 + 범위 입력)
+# ✅ Mask UI (HSV/LAB + 범위 입력)
 # ============================================================
 mask_on = tk.BooleanVar(value=False)
 mask_mode = tk.StringVar(value="HSV")
@@ -138,16 +129,13 @@ def make_range_inputs(parent, name):
         vars_minmax.append(var)
     return vars_minmax
 
-# HSV
 h_vars = make_range_inputs(frame_mask, "H")
 s_vars = make_range_inputs(frame_mask, "S")
 v_vars = make_range_inputs(frame_mask, "V")
-# LAB
 l_vars = make_range_inputs(frame_mask, "L")
 a_vars = make_range_inputs(frame_mask, "A")
 b_vars = make_range_inputs(frame_mask, "B")
 
-# 모드 선택 + 마스크 토글
 mode_frame = ttk.Frame(frame_mask)
 mode_frame.pack(side="left", padx=15)
 ttk.Checkbutton(mode_frame, text="Mask ON", variable=mask_on).pack(anchor="w")
@@ -155,7 +143,7 @@ ttk.Radiobutton(mode_frame, text="HSV", variable=mask_mode, value="HSV").pack(an
 ttk.Radiobutton(mode_frame, text="LAB", variable=mask_mode, value="LAB").pack(anchor="w")
 
 # ============================================================
-# ✅ 상태 표시 + Space 일시정지
+# ✅ 상태 라벨 + Spacebar 일시정지
 # ============================================================
 status_label = ttk.Label(frame_status, text="Status: Playing", font=("Arial", 11, "bold"))
 status_label.pack(anchor="center")
@@ -169,29 +157,46 @@ def toggle_pause(event=None):
 root.bind("<space>", toggle_pause)
 
 # ============================================================
+# ✅ 마스크 적용 함수 (Hue 원형 대응)
+# ============================================================
+def apply_mask(img):
+    if not mask_on.get():
+        return img
+
+    if mask_mode.get() == "HSV":
+        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+        h_min, h_max = h_vars[0].get(), h_vars[1].get()
+        s_min, s_max = s_vars[0].get(), s_vars[1].get()
+        v_min, v_max = v_vars[0].get(), v_vars[1].get()
+
+        # H는 원형(0~180)
+        if h_min <= h_max:
+            mask_h = cv2.inRange(hsv[:,:,0], h_min, h_max)
+        else:
+            # 예: 170~180, 0~10
+            mask_h1 = cv2.inRange(hsv[:,:,0], h_min, 180)
+            mask_h2 = cv2.inRange(hsv[:,:,0], 0, h_max)
+            mask_h = cv2.bitwise_or(mask_h1, mask_h2)
+
+        mask_s = cv2.inRange(hsv[:,:,1], s_min, s_max)
+        mask_v = cv2.inRange(hsv[:,:,2], v_min, v_max)
+        mask = cv2.bitwise_and(mask_h, cv2.bitwise_and(mask_s, mask_v))
+    else:
+        lab = cv2.cvtColor(img, cv2.COLOR_BGR2Lab)
+        l_min, l_max = l_vars[0].get(), l_vars[1].get()
+        a_min, a_max = a_vars[0].get(), a_vars[1].get()
+        b_min, b_max = b_vars[0].get(), b_vars[1].get()
+        mask_l = cv2.inRange(lab[:,:,0], l_min, l_max)
+        mask_a = cv2.inRange(lab[:,:,1], a_min, a_max)
+        mask_b = cv2.inRange(lab[:,:,2], b_min, b_max)
+        mask = cv2.bitwise_and(mask_l, cv2.bitwise_and(mask_a, mask_b))
+
+    return cv2.bitwise_and(img, img, mask=mask)
+
+# ============================================================
 # ✅ 영상 업데이트 루프
 # ============================================================
 frame = None
-
-def apply_mask(img):
-    """현재 설정값 기준으로 마스크 적용"""
-    if not mask_on.get():
-        return img
-    mode = mask_mode.get()
-    if mode == "HSV":
-        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-        lower = np.array([h_vars[0].get(), s_vars[0].get(), v_vars[0].get()], dtype=np.uint8)
-        upper = np.array([h_vars[1].get(), s_vars[1].get(), v_vars[1].get()], dtype=np.uint8)
-        mask = cv2.inRange(hsv, lower, upper)
-    else:
-        lab = cv2.cvtColor(img, cv2.COLOR_BGR2Lab)
-        lower = np.array([l_vars[0].get(), a_vars[0].get(), b_vars[0].get()], dtype=np.uint8)
-        upper = np.array([l_vars[1].get(), a_vars[1].get(), b_vars[1].get()], dtype=np.uint8)
-        mask = cv2.inRange(lab, lower, upper)
-
-    masked = cv2.bitwise_and(img, img, mask=mask)
-    return masked
-
 def update_frame():
     global frame
     if not paused:
@@ -199,25 +204,11 @@ def update_frame():
         color_frame = frames.get_color_frame()
         if color_frame:
             frame = np.asanyarray(color_frame.get_data())
-
     if frame is not None:
         img = apply_mask(frame.copy())
-        # 4:3 비율 유지
         target_w, target_h = 840, 630
-        aspect_src = cam_w / cam_h
-        aspect_dst = target_w / target_h
-        if aspect_dst > aspect_src:
-            new_h = target_h
-            new_w = int(new_h * aspect_src)
-        else:
-            new_w = target_w
-            new_h = int(new_w / aspect_src)
-        resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
-        canvas = np.zeros((target_h, target_w, 3), dtype=np.uint8)
-        y0 = (target_h - new_h) // 2
-        x0 = (target_w - new_w) // 2
-        canvas[y0:y0 + new_h, x0:x0 + new_w] = resized
-        image = Image.fromarray(cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB))
+        resized = cv2.resize(img, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+        image = Image.fromarray(cv2.cvtColor(resized, cv2.COLOR_BGR2RGB))
         imgtk = ImageTk.PhotoImage(image=image)
         image_label.imgtk = imgtk
         image_label.configure(image=imgtk)
