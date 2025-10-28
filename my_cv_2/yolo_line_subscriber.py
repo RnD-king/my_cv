@@ -275,7 +275,7 @@ class LineListenerNode(Node): ##################################################
                         self.tilt_text = "98"
             else: # 분기 1-2 Turn = Straight
                 self.curve_text = "Straight"
-                if abs(delta_zandi) < self.delta_zandi_min: # 분기 3-1 Out = In
+                if abs(delta_zandi) < self.delta_zandi_min: # 분기 3-1 Out = In  << 여기에 r 계산 각도값
                     self.out_text = "In"
                     if abs(line_angle) < 7: # 분기 2 Tilt
                         angle = 0
@@ -301,7 +301,7 @@ class LineListenerNode(Node): ##################################################
                         angle = line_angle
                         status = 98
                         self.tilt_text = "98"
-                else: # 분기 3-2 Out = RL >> 복귀 모션 ㄱㄱ  >>>> 여기 위에랑 뭐가 다르냐
+                else: # 분기 3-2 Out = RL << line_angle 이 반대면 무조건 res = 2 or 3 + r 계산값  // 분기 하나 더 넣어서 무조건 회전 하나 추가
                     self.out_text = "Out Left" if (delta_zandi > 0) else "Out Right"
 
                     r = float(np.clip(delta_zandi / 600.0, -1.0, 1.0))
