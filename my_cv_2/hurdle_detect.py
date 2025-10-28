@@ -28,8 +28,8 @@ class HurdleDetectorNode(Node):
     def __init__(self):
         super().__init__('hurdle_detector')
 
-        self.roi_x_start = int(camera_width * 1 // 5)
-        self.roi_x_end = int(camera_width * 4 // 5)
+        self.roi_x_start = int(camera_width * 3 // 10)
+        self.roi_x_end = int(camera_width * 7 // 10)
         self.roi_y_start = int(camera_height * 0 // 12)
         self.roi_y_end = int(camera_height * 12 // 12)
 
@@ -58,14 +58,9 @@ class HurdleDetectorNode(Node):
         self.frame_idx = 0       
         self.frames_left = 0       # 남은 프레임 수 < collecting_frames
         self.collecting_frames = 15
-
-        # self.hurdle_never_seen = True
-        # self.hurdle_saw_once = False
-        # self.hurdle_miss_count = 0
-
+        
         self.is_hurdle = False
         self.cy_hurdle_cal = 0
-        self.step_in_place = False
         self.jump = False
 
         self.first_res = True
@@ -100,10 +95,12 @@ class HurdleDetectorNode(Node):
         self.declare_parameter("b_low", 140)  # 파랑
         self.declare_parameter("b_high", 255)  # 노랑
 
-        self.declare_parameter("limit_one_step", 150)  #
-        self.declare_parameter("one_step", 100)  #
+        self.declare_parameter("limit_two_step", 150)  #
+        self.declare_parameter("limit_one_step", 250)  #
+        self.declare_parameter("limit_half_step", 300)  #
         self.declare_parameter("two_step", 200)  #
-        self.declare_parameter("limit_jump", 250)  #
+        self.declare_parameter("one_step", 100)  #
+        self.declare_parameter("half_step", 50)  #
 
         # 파라미터 적용
         self.hurdle_near_by = self.get_parameter("hurdle_near_by").value
@@ -114,10 +111,12 @@ class HurdleDetectorNode(Node):
         self.b_low = self.get_parameter("b_low").value
         self.b_high = self.get_parameter("b_high").value
 
+        self.limit_two_step = self.get_parameter("limit_two_step").value
         self.limit_one_step = self.get_parameter("limit_one_step").value
-        self.one_step = self.get_parameter("one_step").value
+        self.limit_half_step = self.get_parameter("limit_half_step").value
         self.two_step = self.get_parameter("two_step").value
-        self.limit_jump = self.get_parameter("limit_jump").value
+        self.one_step = self.get_parameter("one_step").value
+        self.half_step = self.get_parameter("half_step").value
 
         self.add_on_set_parameters_callback(self.parameter_callback)
 
@@ -154,10 +153,12 @@ class HurdleDetectorNode(Node):
             elif p.name == "a_high": self.a_high = int(p.value)
             elif p.name == "b_low": self.b_low = int(p.value)
             elif p.name == "b_high": self.b_high = int(p.value)
+            elif p.name == "limit_two_step": self.limit_two_step = int(p.value)
             elif p.name == "limit_one_step": self.limit_one_step = int(p.value)
-            elif p.name == "one_step": self.one_step = int(p.value)
-            elif p.name == "two_step": self.two_step = int(p.value)
-            elif p.name == "limit_jump": self.limit_jump = int(p.value)
+            elif p.name == "limit_half_step": self.limit_half_step = int(p.value)
+            elif p.name == "two_step": self.one_step = int(p.value)
+            elif p.name == "one_step": self.two_step = int(p.value)
+            elif p.name == "half_step": self.limit_half_step = int(p.value)
             
             self.lower_lab = np.array([self.l_low, self.a_low, self.b_low ], dtype=np.uint8) # 색공간 변하면 적용
             self.upper_lab = np.array([self.l_high, self.a_high, self.b_high], dtype=np.uint8)
@@ -318,14 +319,15 @@ class HurdleDetectorNode(Node):
                                     ang = -math.degrees(math.atan2(-vy, vx))
                                     if ang >= 90:
                                         ang -= 180  # <<< 컨투어 기준
-                                    
-                                    best_cnt = cnt
-                                    best_cx_hurdle = x0 + self.roi_x_start
-                                    best_cy_hurdle = y0 + self.roi_y_start
-                                    best_w_hurdle = int(rw) 
-                                    best_h_hurdle = float(rh) 
-                                    best_angle = float(ang)
-                                    best_vx, best_vy = vx, vy
+                                    if abs(ang) < 40:
+                                        best_cnt = cnt
+                                        best_cx_hurdle = x0 + self.roi_x_start
+                                        best_cy_hurdle = y0 + self.roi_y_start
+                                        best_w_hurdle = int(rw) 
+                                        best_h_hurdle = float(rh) 
+                                        best_angle = float(ang)
+                                        best_vx, best_vy = vx, vy
+                                        best_ratio = fill_ratio
 
             if best_cnt is not None:
                 self.hurdle_lost = 0
@@ -391,11 +393,6 @@ class HurdleDetectorNode(Node):
             self.hurdle_dy_list.append(best_dy)
 
             if self.frames_left <= 0:
-
-                #if self.first_res:
-                    #res = 99
-                    #avg_angle = 0
-                    # process_time = (time.time() - self.line_start_time) / self.collecting_frames if self.line_start_time is not None else 0.0
                 result = Counter(self.hurdle_valid_list).most_common(1)[0][0]
                 process_time = (time.time() - self.line_start_time) / self.collecting_frames if self.line_start_time is not None else 0.0
                 
@@ -405,9 +402,9 @@ class HurdleDetectorNode(Node):
                     self.get_logger().info(f"[Hurdle] Jump!") # 일단 임시로 # self 지정하셈
                     self.jump = False
                     self.is_hurdle = False
-                    self.step_in_place = False
+                    self.cy_hurdle_cal = 0
                     self.last_position_text = f"Jump!"
-                
+
                 else:
                     if result:
                         self.is_hurdle = True
@@ -419,14 +416,28 @@ class HurdleDetectorNode(Node):
                         avg_angle = np.mean(angles)
                         avg_dy = int(round(np.mean(delta_ys)))
 
-                        if avg_cy >= self.limit_jump:
+                        if avg_cy >= self.limit_half_step:
                             res = 6 # 스텝인플레이스고고  << forward_half 임시
-                            self.cy_hurdle_cal = 0
+                            self.cy_hurdle_cal += self.half_step
                             self.jump = True
                             self.get_logger().info(f"[Hurdle] Step in place complete! Prepare to jump!")
                             self.last_position_text = f"Preparing to jump!"
+
+                        if avg_cy >= self.limit_one_step:
+                            self.cy_hurdle_cal = avg_cy
+                            if avg_angle >= 10:
+                                res = 3
+                                self.cy_hurdle_cal += 10
+                            elif avg_angle <= -10:
+                                res = 2
+                                self.cy_hurdle_cal += 10
+                            else:
+                                res = 6 # 진짜 반발짝만
+                                self.cy_hurdle_cal += self.half_step # 
+                            self.get_logger().info(f"[Hurdle] Half step! | angle= {avg_angle}, dis= {avg_dy}")
+                            self.last_position_text = f"angle= {avg_angle:2f}, dis= {avg_dy} | Half step"
                         
-                        elif avg_cy >= self.limit_one_step: # 한 걸음
+                        elif avg_cy >= self.limit_two_step: # 한 걸음
                             self.cy_hurdle_cal = avg_cy
                             if avg_angle >= 10:
                                 res = 3
@@ -437,9 +448,8 @@ class HurdleDetectorNode(Node):
                             else:
                                 res = 12
                                 self.cy_hurdle_cal += self.one_step # << 한 걸음?
-                            self.get_logger().info(f"[Hurdle] Near by! | angle= {avg_angle}, dis= {avg_dy}")
+                            self.get_logger().info(f"[Hurdle] One step! | angle= {avg_angle}, dis= {avg_dy}")
                             self.last_position_text = f"angle= {avg_angle:2f}, dis= {avg_dy} | One step"
-                            self.step_in_place = True
 
                         else: # 두 걸음
                             self.cy_hurdle_cal = avg_cy
@@ -458,17 +468,22 @@ class HurdleDetectorNode(Node):
                     else:
                         avg_angle = 0
                         if self.is_hurdle:
-                            if self.step_in_place or self.cy_hurdle_cal >= self.limit_jump: # 조금 전진 후 허들 넘기
+                            if self.cy_hurdle_cal >= self.limit_half_step:
                                 res = 6 # 스텝인플레이스고고  << forward_half 임시
                                 self.cy_hurdle_cal = 0
                                 self.jump = True
                                 self.get_logger().info(f"[Hurdle] Step in place complete! Prepare to jump!")
                                 self.last_position_text = f"Preparing to jump!"
+                            elif self.cy_hurdle_cal >= self.limit_one_step: # 조금 전진 후 허들 넘기
+                                res = 6 # 진짜 반스텝
+                                self.cy_hurdle_cal += self.half_step
+                                self.get_logger().info(f"[Hurdle] Miss! | estimated cy= {self.cy_hurdle_cal}")
+                                self.last_position_text = f"Miss! | estimated cy= {self.cy_hurdle_cal} | Half step"
 
                             else: # 중간에 놓친 거 << 추가할 거
                                 res = 12 # 그냥 걸어봐
-                                self.get_logger().info(f"[Hurdle] Miss! | estimated cy= {self.cy_hurdle_cal}")
                                 self.cy_hurdle_cal += self.one_step
+                                self.get_logger().info(f"[Hurdle] Miss! | estimated cy= {self.cy_hurdle_cal}")
                                 self.last_position_text = f"Miss! | estimated cy= {self.cy_hurdle_cal} | One step"
 
                         else: # 라인
@@ -494,7 +509,7 @@ class HurdleDetectorNode(Node):
         cv2.circle(frame, (zandi_x, zandi_y), 5, (255, 0, 255), -1)
         cv2.line(frame, (self.roi_x_start, zandi_y), (self.roi_x_end, zandi_y), (255, 0, 255), 2)
         
-        cv2.rectangle(frame, (self.roi_x_start + 1, self.limit_one_step), (self.roi_x_end - 1, self.limit_jump), (123, 124, 55), 2)
+        cv2.rectangle(frame, (self.roi_x_start + 1, self.limit_one_step), (self.roi_x_end - 1, self.limit_half_step), (123, 124, 55), 2)
 
         # 딜레이 측정
         elapsed = time.time() - start_time
