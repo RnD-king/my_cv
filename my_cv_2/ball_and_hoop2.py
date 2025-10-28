@@ -897,27 +897,27 @@ class LineListenerNode(Node): ##################################################
                         self.last_avg_cx_hoop = avg_cx # 놓쳤을 때 판단용
                         self.depth_max_hoop = avg_dis + 300 # 최대거리 제한
 
-                        if 1200 < avg_dis: # 거리가 0.7m 이상 > 일단 골대 쪽으로 직진하기
+                        if 1200 < avg_dis: # 거리가 1.2m 이상 > 일단 골대 쪽으로 직진하기
 
                             angle = int(round(math.degrees(math.atan((avg_cx - self.cx_intr) / self.fx))))
                             
-                            if angle >= 8:
+                            if angle >= 12:
                                 res = 30
-                            elif angle <= -8:
+                            elif angle <= -12:
                                 res = 29
                             else:
                                 res = 1
                             self.get_logger().info(f"[Hoop] Approaching | x: {avg_cx}, dis: {avg_dis}, "
                                                 f"line angle= {angle}, backboard angle= {avg_yaw_deg}")
                             
-                        elif 700 < avg_dis: # 거리가 0.7m 이상 > 일단 골대 쪽으로 직진하기
+                        elif 800 < avg_dis: # 거리가 0.8m 이상 > 일단 골대 쪽으로 직진하기
 
                             angle = int(round(math.degrees(math.atan((avg_cx - self.cx_intr) / self.fx))))
                             
-                            if angle >= 8:
-                                res = 3
-                            elif angle <= -8:
-                                res = 2
+                            if angle >= 12:
+                                res = 30
+                            elif angle <= -12:
+                                res = 29
                             else:
                                 res = 27
                             self.get_logger().info(f"[Hoop] Approaching | x: {avg_cx}, dis: {avg_dis}, "
