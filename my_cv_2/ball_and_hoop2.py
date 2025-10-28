@@ -47,7 +47,7 @@ class LineListenerNode(Node): ##################################################
         self.backboard_score_text = 'Miss' # H
 
         # 추적
-        self.last_cx_ball = self.last_cy_ball = self.last_z_ball = self.last_radius = self.last_ellipse = None
+        self.last_cx_ball = self.last_cy_ball = self.last_z_ball = self.last_radius = self.last_radius = None
         self.last_avg_cy_ball = 0 # 화면 전환용
         self.ball_lost = 0 # B
 
@@ -326,7 +326,7 @@ class LineListenerNode(Node): ##################################################
                     self.ball_dis_list.clear()
                     self.frame_idx = 0
 
-                    self.last_cx_ball = self.last_cy_ball = self.last_ellipse = self.last_z_ball = None
+                    self.last_cx_ball = self.last_cy_ball = self.last_radius = self.last_z_ball = None
                     self.ball_lost = 0
                     self.cam2_miss_count = 0
 
@@ -355,24 +355,22 @@ class LineListenerNode(Node): ##################################################
                 contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE) 
 
                 best_cnt_ball = None
-                best_ratio_ball = 0.7   
-                best_cx_ball = best_cy_ball = best_z_ball = best_ellipse = None
+                best_ratio_ball = 0.6 
+                best_cx_ball = best_cy_ball = best_z_ball = best_radius = None
 
                 for cnt in contours: # 가장 원형에 가까운 컨투어 찾기
-                    area = cv2.contourArea(cnt) # 1.
-                    if 2000 > area > 500:
-                        ellipse = cv2.fitEllipse(cnt)
-                        (cx, cy), (MA, ma), angle = ellipse
-                        ellipse_area = math.pi * (MA / 2) * (ma / 2)
-                        area_ratio = area / ellipse_area
-                        if 2 > MA / ma > 0.5:
-                            # 2. 컨투어 면적과 외접원 면적의 비율이 가장 작은 놈
-                            if area_ratio > best_ratio_ball:
-                                best_cnt_ball = cnt
-                                best_ratio_ball = area_ratio
-                                best_cx_ball = int(cx + self.roi_x_start) 
-                                best_cy_ball = int(cy + self.roi_y_start)
-                                best_ellipse = ellipse
+                    area = cv2.contourArea(cnt) # 1. 면적 > 1000
+                    if area > 500:
+                        (x, y), circle_r = cv2.minEnclosingCircle(cnt)
+                        circle_area = circle_r * circle_r * math.pi
+                        ratio = area / circle_area
+                        # 2. 컨투어 면적과 외접원 면적의 비율이 가장 작은 놈1
+                        if ratio > best_ratio_ball:
+                            best_cnt_ball = cnt
+                            best_ratio_ball = ratio
+                            best_cx_ball = int(x + self.roi_x_start)
+                            best_cy_ball = int(y + self.roi_y_start)
+                            best_radius = int(circle_r)
 
                 # 검출 결과
                 if best_cnt_ball is not None: # 원 탐지를 했다면
@@ -399,12 +397,12 @@ class LineListenerNode(Node): ##################################################
                     # 이전 위치 업데이트
                     self.last_cx_ball = best_cx_ball
                     self.last_cy_ball = best_cy_ball
-                    self.last_ellipse = best_ellipse
+                    self.last_radius = best_radius
                     
                     self.rect_color = (0, 255, 0)
                     self.draw_color = (255, 0, 0)
 
-                    cv2.ellipse(frame, best_ellipse, self.draw_color, 2)
+                    cv2.circle(frame, [best_cx_ball, best_cy_ball], best_radius, self.draw_color, 2)
 
                 else:
                     if self.ball_lost < 3 and self.last_cx_ball is not None:
@@ -413,7 +411,7 @@ class LineListenerNode(Node): ##################################################
                         best_cx_ball = self.last_cx_ball
                         best_cy_ball = self.last_cy_ball
                         best_z_ball = self.last_z_ball  
-                        best_ellipse = self.last_ellipse
+                        best_radius = self.last_radius
 
                         self.draw_color = (0, 255, 255)
                         self.rect_color = (255, 0, 0)
@@ -421,12 +419,12 @@ class LineListenerNode(Node): ##################################################
                         is_ball_valid = True
                         self.get_logger().info(f"[Ball] Lost! | {best_cx_ball}, {best_cy_ball}, dist = {best_z_ball}")
 
-                        cv2.ellipse(frame, best_ellipse, self.draw_color, 2)
+                        cv2.circle(frame, [best_cx_ball, best_cy_ball], best_radius, self.draw_color, 2)
                     else:
                         self.ball_lost = 3
 
-                        best_cx_ball = best_cy_ball = best_z_ball = None
-                        self.last_cx_ball = self.last_cy_ball = self.last_ellipse = self.last_z_ball = None
+                        best_cx_ball = best_cy_ball = best_z_ball = best_radius = None
+                        self.last_cx_ball = self.last_cy_ball = self.last_radius = self.last_z_ball = None
                         
                         self.rect_color = (0, 0, 255)
 
@@ -482,7 +480,7 @@ class LineListenerNode(Node): ##################################################
                             self.last_position_text = "[Ball] Changing to Cam2,,"
                             self.cam1_ball_count = 0
 
-                            self.last_cx_ball = self.last_cy_ball = self.last_z_ball = self.last_ellipse = None
+                            self.last_cx_ball = self.last_cy_ball = self.last_z_ball = self.last_radius = None
                             self.backboard_score_text = "Ball Now"
 
                             self.apply_mode_layout()
@@ -1204,6 +1202,7 @@ class LineListenerNode(Node): ##################################################
             # 검출 결과 처리: 이전 위치 유지 로직
             if best_cnt_ball is not None:
                 self.ball_lost = 0
+                
                 self.last_cx_ball = best_cx_ball
                 self.last_cy_ball = best_cy_ball
                 self.last_radius = best_radius
