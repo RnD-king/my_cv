@@ -73,7 +73,7 @@ class LineListenerNode(Node): ##################################################
         self.declare_parameter("delta_zandi_min", 140) # 핑크 선 두께
         self.declare_parameter("collecting_frames", 9) # 몇 프레임 동안 보고 판단할 거냐  << yolo는 15프레임, 정지 5프레임, 탐지는 10프레임만
         self.declare_parameter("delta_tip_min", 15) # 빨간 점이 얼마나 벗어나야 커브일까
-        self.declare_parameter("vertical", 20) # 직진 판단 각도
+        self.declare_parameter("vertical", 30) # 직진 판단 각도
         self.declare_parameter("horizontal", 75) # 수평 판단 각도  <<<  아직 안 만듬
         self.declare_parameter("delta_out", 90) # out 복귀 판단 범위
 
@@ -191,130 +191,45 @@ class LineListenerNode(Node): ##################################################
                     x1, x2 = roi_x_end, roi_x_start
                     y1 = int(m * x1 + b)
                     y2 = int(m * x2 + b)
-
-            # ---------------------------------------------------------------------------------------------
-
-            # if delta_zandi >= self.delta_out:
-                # if abs(delta_tip) > self.delta_tip_min: # 분기 1-1. Turn = RL
-                #     angle = math.degrees(math.atan2(tip_x - zandi_x, -(tip_y - zandi_y)))
-                #     if angle >= 90:
-                #         angle -= 180
-
-                #     if abs(angle) <= self.vertical: 
-                #         status = 1
-                #     elif angle > self.vertical: 
-                #         status = 3
-                #     elif angle < -self.vertical:
-                #         status = 2
-                #     else:
-                #         status = 98
-                # else:
-                #     if delta_zandi >= self.delta_out:
-
-
-            # ------------------------------------------------------------------------------------------- 판단 시작
-            # if self.out_now: # 한 번 나간 상태
-            #     if abs(delta_zandi) <= self.delta_out: # 탈출 성공
-            #         if abs(line_angle) < self.vertical:
-            #             angle = 0
-            #             status = 1
-            #             self.tilt_text = "Straight"
-            #         elif self.horizontal > line_angle > self.vertical:
-            #             angle = line_angle
-            #             status = 3
-            #             self.tilt_text = "Spin Right"
-            #         elif -self.horizontal < line_angle < -self.vertical:
-            #             angle = line_angle
-            #             status = 2
-            #             self.tilt_text = "Spin Left"
-            #         else:
-            #             angle = line_angle # 라인이 수평으로 보일 때 << 나중에 다시
-            #             status = 98  # 나중에 다시~
-            #             self.tilt_text = "98"
-            #     else:
-            #         angle = 0
-            #         status = 27  # 탈출 실패 
-            #         self.out_text = "Still Out"
-
-            # else: # 평소
+            
+            # 화면 출력
+            if abs(line_angle) < self.vertical:
+                self.tilt_text = "Straight"
+            elif self.horizontal > line_angle > self.vertical:
+                self.tilt_text = "Spin Right"
+            elif -self.horizontal < line_angle < -self.vertical:
+                self.tilt_text = "Spin Left"
+            else: 
+                self.tilt_text = "98"
+            
+            # res 결정
             if abs(delta_tip) > self.delta_tip_min: # 분기 1-1. Turn = RL
                 angle = math.degrees(math.atan2(tip_x - zandi_x, -(tip_y - zandi_y)))
                 if angle >= 90:
                     angle -= 180
 
-                if abs(angle) <= self.vertical: 
-                    status = 1
-                elif self.horizontal > angle > self.vertical: 
-                    status = 3
-                elif -self.horizontal < angle < -self.vertical:
-                    status = 2
+                if abs(angle) <= 7:
+                    status = 1 # 
+                elif 7 < angle < 20:
+                    status = 30 # 
+                elif -7 > angle > -20:
+                    status = 29 #
+                elif self.horizontal > angle >= 20:
+                    status = 3 # 우회전
+                elif -self.horizontal < angle <= -20:
+                    status = 2 # 좌회전 
                 else:
                     status = 98
 
                 self.curve_text = "Turn Left" if (delta_tip * line_angle > 0) else "Turn Right"
 
-                if abs(delta_zandi) <= self.delta_zandi_min: # 분기 3-1 Out = In
-                    self.out_text = "In"
-                    if abs(line_angle) < self.vertical:
-                        self.tilt_text = "Straight"
-                    elif self.horizontal > line_angle > self.vertical:
-                        self.tilt_text = "Spin Right"
-                    elif -self.horizontal < line_angle < -self.vertical:
-                        self.tilt_text = "Spin Left"
-                    else: 
-                        self.tilt_text = "98"
-                else: # 분기 3-2 Out = RL
-                    self.out_text = "Out Left" if (delta_zandi > 0) else "Out Right"
-                    if abs(line_angle) < self.vertical:
-                        self.tilt_text = "Straight"
-                    elif self.horizontal > line_angle > self.vertical:
-                        self.tilt_text = "Spin Right"
-                    elif -self.horizontal < line_angle < -self.vertical:
-                        self.tilt_text = "Spin Left"
-                    else: 
-                        self.tilt_text = "98"
             else: # 분기 1-2 Turn = Straight
                 self.curve_text = "Straight"
                 if abs(delta_zandi) < self.delta_zandi_min: # 분기 3-1 Out = In  << 여기에 r 계산 각도값
                     self.out_text = "In"
-                    if abs(line_angle) < 7: # 분기 2 Tilt
-                        angle = 0
-                        status = 1
-                        self.tilt_text = "Straight"
-                    elif 7 < line_angle < self.vertical:
-                        angle = 0
-                        status = 30
-                        self.tilt_text = "Spin Right"
-                    elif -7 > line_angle > -self.vertical:
-                        angle = 0
-                        status = 29
-                        self.tilt_text = "Spin Left"
-                    elif self.horizontal > line_angle > self.vertical:
-                        angle = line_angle
-                        status = 3
-                        self.tilt_text = "Spin Right"
-                    elif -self.horizontal < line_angle < -self.vertical:
-                        angle = line_angle
-                        status = 2
-                        self.tilt_text = "Spin Left"
-                    else:
-                        angle = line_angle
-                        status = 98
-                        self.tilt_text = "98"
-                else: # 분기 3-2 Out = RL << line_angle 이 반대면 무조건 res = 2 or 3 + r 계산값  // 분기 하나 더 넣어서 무조건 회전 하나 추가
-                    self.out_text = "Out Left" if (delta_zandi > 0) else "Out Right"
 
-                    r = float(np.clip(delta_zandi / 600.0, -1.0, 1.0))
+                    r = float(np.clip(delta_zandi / 550.0, -1.0, 1.0))
                     angle = math.degrees(math.asin(r)) + line_angle
-
-                    if abs(line_angle) < self.vertical:
-                        self.tilt_text = "Straight"
-                    elif self.horizontal > line_angle > self.vertical:
-                        self.tilt_text = "Spin Right"
-                    elif -self.horizontal < line_angle < -self.vertical:
-                        self.tilt_text = "Spin Left"
-                    else:
-                        self.tilt_text = "98"
 
                     if abs(angle) <= 7:
                         status = 1 # 
@@ -328,6 +243,30 @@ class LineListenerNode(Node): ##################################################
                         status = 2 # 좌회전 
                     else:
                         status = 98
+
+                else: # 분기 3-2 Out = RL << line_angle 이 반대면 무조건 res = 2 or 3 + r 계산값  // 분기 하나 더 넣어서 무조건 회전 하나 추가
+                    self.out_text = "Out Left" if (delta_zandi > 0) else "Out Right"
+                
+                    r = float(np.clip((delta_zandi - np.sign(delta_zandi)*(self.delta_zandi_min - 50))/ 500.0, -1.0, 1.0))
+                    angle = math.degrees(math.asin(r)) + line_angle
+        
+                    if delta_zandi > 0 and line_angle > 4:
+                        status = 3
+                    elif delta_zandi < 0 and line_angle < -4:
+                        status = 2
+                    else:
+                        if abs(angle) <= 7:
+                            status = 1 # 
+                        elif 7 < angle < self.vertical:
+                            status = 30 # 
+                        elif -7 > angle > -self.vertical:
+                            status = 29 #
+                        elif self.horizontal > angle >= self.vertical:
+                            status = 3 # 우회전
+                        elif -self.horizontal < angle <= -self.vertical:
+                            status = 2 # 좌회전 
+                        else:
+                            status = 98
 
             self.last_line_xy = (int(x1), int(y1), int(x2), int(y2)) # 시각화
 
@@ -362,66 +301,24 @@ class LineListenerNode(Node): ##################################################
                 else:
                     x1, x2 = roi_x_end, roi_x_start
                     y1 = int(m*x1 + b); y2 = int(m*x2 + b)
-            
-            # if self.out_now: # 한 번 나간 상태
-            #     if abs(delta_zandi) <= self.delta_out: # 탈출 성공
-            #         if abs(line_angle) < self.vertical:
-            #             angle = 0
-            #             status = 1
-            #             self.tilt_text = "Straight"
-            #         elif self.horizontal > line_angle > self.vertical:
-            #             angle = line_angle
-            #             status = 3
-            #             self.tilt_text = "Spin Right"
-            #         elif -self.horizontal < line_angle < -self.vertical:
-            #             angle = line_angle
-            #             status = 2
-            #             self.tilt_text = "Spin Left"
-            #         else:
-            #             angle = line_angle # 라인이 수평으로 보일 때 << 나중에 다시
-            #             status = 98  # 제자리에서 다시 보기
-            #             self.tilt_text = "98"
-            #     else:
-            #         angle = 0
-            #         status = 27  # 탈출 실패 
-            #         self.out_text = "Still Out"
-            
-            # else:
-            if delta_zandi < self.delta_zandi_min: # 분기 3-1 Out = In
+
+            if abs(line_angle) < self.vertical:
+                self.tilt_text = "Straight"
+            elif self.horizontal > line_angle > self.vertical:
+                self.tilt_text = "Spin Right"
+            elif -self.horizontal < line_angle < -self.vertical:
+                self.tilt_text = "Spin Left"
+            else: 
+                self.tilt_text = "98"
+
+            if abs(delta_zandi) > self.delta_zandi_min: # 분기 3-1 Out = In  << 여기에 r 계산 각도값
+                self.out_text = "Out Left" if (delta_zandi > 0) else "Out Right"
+            else:
                 self.out_text = "In"
-
-                if abs(line_angle) <= self.vertical: # 분기 2 Tilt
-                    angle = 0
-                    status = 1
-                    self.tilt_text = "Straight"
-                elif self.horizontal > line_angle > self.vertical:
-                    angle = line_angle
-                    status = 3
-                    self.tilt_text = "Spin Right"
-                elif -self.horizontal < line_angle < -self.vertical:
-                    angle = line_angle
-                    status = 2
-                    self.tilt_text = "Spin Left"
-                else:
-                    angle = line_angle
-                    status = 98
-                    self.tilt_text = "98"
-
-            else: #분기 3-2 Out = RL  >> 복귀 모션 ㄱㄱ~
-                self.out_text = "Out Left" if (avg_line_x - zandi_x > 0) else "Out Right"
-                r = float(np.clip(delta_zandi / 600.0, -1.0, 1.0))
-                angle = math.degrees(math.asin(r))
-
-                if abs(line_angle) <= self.vertical: # 분기 2 Tilt
-                    self.tilt_text = "Straight"
-                elif self.horizontal > line_angle > self.vertical:
-                    self.tilt_text = "Spin Right"
-                elif -self.horizontal < line_angle < -self.vertical:
-                    self.tilt_text = "Spin Left"
-                else: 
-                    self.tilt_text = "98"
-
-                angle += line_angle
+            
+            if abs(delta_zandi) < self.delta_zandi_min: # 분기 3-1 Out = In  << 여기에 r 계산 각도
+                r = float(np.clip(delta_zandi / 550.0, -1.0, 1.0))
+                angle = math.degrees(math.asin(r)) + line_angle
 
                 if abs(angle) <= 7:
                     status = 1 # 
@@ -436,6 +333,28 @@ class LineListenerNode(Node): ##################################################
                 else:
                     status = 98
 
+            else: # 분기 3-2 Out = RL << line_angle 이 반대면 무조건 res = 2 or 3 + r 계산값  // 분기 하나 더 넣어서 무조건 회전 하나 추가            
+                r = float(np.clip((delta_zandi - np.sign(delta_zandi)*(self.delta_zandi_min - 50))/ 500.0, -1.0, 1.0))
+                angle = math.degrees(math.asin(r)) + line_angle
+    
+                if delta_zandi > 0 and line_angle > 4:
+                    status = 3
+                elif delta_zandi < 0 and line_angle < -4:
+                    status = 2
+                else:
+                    if abs(angle) <= 7:
+                        status = 1 # 
+                    elif 7 < angle < self.vertical:
+                        status = 30 # 
+                    elif -7 > angle > -self.vertical:
+                        status = 29 #
+                    elif self.horizontal > angle >= self.vertical:
+                        status = 3 # 우회전
+                    elif -self.horizontal < angle <= -self.vertical:
+                        status = 2 # 좌회전 
+                    else:
+                        status = 98
+
             self.last_line_xy = (int(x1), int(y1), int(x2), int(y2))  # 시각화
 
         else:  # ======================================================================================= III. 1점 이하 탐지
@@ -447,7 +366,6 @@ class LineListenerNode(Node): ##################################################
             line_angle = 0
             delta_zandi = 0
             status = 99 # 탐지 못 하면 99
-            # avg_line_x = int(round((roi_x_start + roi_x_end) / 2))
 
             self.last_line_xy = None # 시각화
         # =========================================================================================================
