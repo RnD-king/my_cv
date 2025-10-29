@@ -539,7 +539,7 @@ class LineListenerNode(Node): ##################################################
 
                         elif self.cam1_ball_count == 1:  # 한 번 찾았었는데 놓쳤다면
                             self.get_logger().info(f"[Ball] finding one more")
-                            res = 97 # 뒤로 가서 다시 봐봐
+                            res = 12# 앞 가서 다시 봐봐
                             angle = 0
 
                             self.last_position_text = "[Ball] finding one more"
