@@ -28,9 +28,9 @@ class HurdleDetectorNode(Node):
     def __init__(self):
         super().__init__('hurdle_detector')
 
-        self.roi_x_start = int(camera_width * 0 // 5)
-        self.roi_x_end = int(camera_width * 5 // 5)
-        self.roi_y_start = int(camera_height * 1 // 12)
+        self.roi_x_start = int(camera_width * 3 // 10)
+        self.roi_x_end = int(camera_width * 7 // 10)
+        self.roi_y_start = int(camera_height * 0 // 12)
         self.roi_y_end = int(camera_height * 12 // 12)
 
         # 타이머 
@@ -58,15 +58,12 @@ class HurdleDetectorNode(Node):
         self.frame_idx = 0       
         self.frames_left = 0       # 남은 프레임 수 < collecting_frames
         self.collecting_frames = 15
-
-        # self.hurdle_never_seen = True
-        # self.hurdle_saw_once = False
-        # self.hurdle_miss_count = 0
-
+        
         self.is_hurdle = False
         self.cy_hurdle_cal = 0
-        self.step_in_place = False
         self.jump = False
+
+        self.first_res = True
 
         self.hurdle_valid_list = []  
         self.hurdle_cy_list = []
@@ -78,7 +75,7 @@ class HurdleDetectorNode(Node):
         self.bridge = CvBridge()
         self.subscription_color = self.create_subscription(  # 컬러
             Image,
-            '/camera/color/image_raw',  # RealSense에서 제공하는 컬러 이미지 토픽  >>  640x480 / 15fps
+            '/cam2/color/image_raw',  # RealSense에서 제공하는 컬러 이미지 토픽  >>  640x480 / 15fps
             self.cam2_image_callback, 10)
         
         self.motion_end_sub = self.create_subscription(  # 모션엔드
@@ -98,10 +95,12 @@ class HurdleDetectorNode(Node):
         self.declare_parameter("b_low", 140)  # 파랑
         self.declare_parameter("b_high", 255)  # 노랑
 
-        self.declare_parameter("limit_one_step", 255)  #
-        self.declare_parameter("one_step", 255)  #
-        self.declare_parameter("two_step", 255)  #
-        self.declare_parameter("limit_jump", 255)  #
+        self.declare_parameter("limit_two_step", 150)  #
+        self.declare_parameter("limit_one_step", 250)  #
+        self.declare_parameter("limit_half_step", 300)  #
+        self.declare_parameter("two_step", 200)  #
+        self.declare_parameter("one_step", 100)  #
+        self.declare_parameter("half_step", 50)  #
 
         # 파라미터 적용
         self.hurdle_near_by = self.get_parameter("hurdle_near_by").value
@@ -112,10 +111,12 @@ class HurdleDetectorNode(Node):
         self.b_low = self.get_parameter("b_low").value
         self.b_high = self.get_parameter("b_high").value
 
+        self.limit_two_step = self.get_parameter("limit_two_step").value
         self.limit_one_step = self.get_parameter("limit_one_step").value
-        self.one_step = self.get_parameter("one_step").value
+        self.limit_half_step = self.get_parameter("limit_half_step").value
         self.two_step = self.get_parameter("two_step").value
-        self.limit_jump = self.get_parameter("limit_jump").value
+        self.one_step = self.get_parameter("one_step").value
+        self.half_step = self.get_parameter("half_step").value
 
         self.add_on_set_parameters_callback(self.parameter_callback)
 
@@ -136,9 +137,9 @@ class HurdleDetectorNode(Node):
             self.roi_y_start = camera_height * 4 // 12
             self.roi_y_end   = camera_height * 12 // 12
         else:
-            self.roi_x_start = camera_width * 0 // 5
-            self.roi_x_end   = camera_width * 5 // 5
-            self.roi_y_start = camera_height * 1 // 12
+            self.roi_x_start = camera_width * 1 // 5
+            self.roi_x_end   = camera_width * 4 // 5
+            self.roi_y_start = camera_height * 0 // 12
             self.roi_y_end   = camera_height * 12 // 12  
 
     def parameter_callback(self, params):
@@ -152,9 +153,15 @@ class HurdleDetectorNode(Node):
             elif p.name == "a_high": self.a_high = int(p.value)
             elif p.name == "b_low": self.b_low = int(p.value)
             elif p.name == "b_high": self.b_high = int(p.value)
+            elif p.name == "limit_two_step": self.limit_two_step = int(p.value)
+            elif p.name == "limit_one_step": self.limit_one_step = int(p.value)
+            elif p.name == "limit_half_step": self.limit_half_step = int(p.value)
+            elif p.name == "two_step": self.one_step = int(p.value)
+            elif p.name == "one_step": self.two_step = int(p.value)
+            elif p.name == "half_step": self.limit_half_step = int(p.value)
             
-        self.lower_lab = np.array([self.l_low, self.a_low, self.b_low ], dtype=np.uint8) # 색공간 변하면 적용
-        self.upper_lab = np.array([self.l_high, self.a_high, self.b_high], dtype=np.uint8)
+            self.lower_lab = np.array([self.l_low, self.a_low, self.b_low ], dtype=np.uint8) # 색공간 변하면 적용
+            self.upper_lab = np.array([self.l_high, self.a_high, self.b_high], dtype=np.uint8)
             
         return SetParametersResult(successful=True)
     
@@ -296,28 +303,31 @@ class HurdleDetectorNode(Node):
                 area = cv2.contourArea(cnt)
                 if area > 500:   # 1. 너무 작은 건 제외
                     (rcx, rcy), (rw, rh), rang = cv2.minAreaRect(cnt) # 외접 사각형 그리고
-                    rang *= -1  # minAreaRect는 짧은 변과 x축 기준이고 0 ~ -90 / 우린 긴 변과 y축 기준에 0 ~ 90이 필요함  << 외접사각형기준
                     if rw < rh:
                         rw, rh = rh, rw # 난 h가 짧아야 한다
                     aspect = rw / rh
-                    if aspect > 4.0:     # 2. 가로세로 비율            
-                        rect_area = rw * rh
-                        fill_ratio = area / rect_area
-                        if best_ratio <= fill_ratio:  # 3. 면적 비율                               
-                            if rw > best_w_hurdle: # 4. 그 중에서 가로가 제일 긴 박스
-                                vx, vy, x0, y0 = cv2.fitLine(cnt, cv2.DIST_L2, 0, 0.01, 0.01)
-                                vx = float(vx); vy = float(vy); x0 = float(x0); y0 = float(y0)
-                                ang = -math.degrees(math.atan2(-vy, vx))
-                                if ang >= 90:
-                                    ang -= 180  # <<< 컨투어 기준
-                                
-                                best_cnt = cnt
-                                best_cx_hurdle = x0 + self.roi_x_start
-                                best_cy_hurdle = y0 + self.roi_y_start
-                                best_w_hurdle = int(rw) # 필없
-                                best_h_hurdle = float(rh) 
-                                best_angle = float(ang)
-                                best_vx, best_vy = vx, vy
+                    if rw > 300:
+                        if aspect > 4.0:     # 2. 가로세로 비율            
+                            rect_area = rw * rh
+                            fill_ratio = area / rect_area
+                            if best_ratio <= fill_ratio:  # 3. 면적 비율                               
+                                if rw > best_w_hurdle: # 4. 그 중에서 가로가 제일 긴 박스
+                                    vx, vy, x0, y0 = cv2.fitLine(cnt, cv2.DIST_L2, 0, 0.01, 0.01)
+                                    if (vy < 0) or (vy == 0 and vx < 0):
+                                        vx, vy = -vx, -vy
+                                    vx = float(vx); vy = float(vy); x0 = float(x0); y0 = float(y0)
+                                    ang = -math.degrees(math.atan2(-vy, vx))
+                                    if ang >= 90:
+                                        ang -= 180  # <<< 컨투어 기준
+                                    if abs(ang) < 40:
+                                        best_cnt = cnt
+                                        best_cx_hurdle = x0 + self.roi_x_start
+                                        best_cy_hurdle = y0 + self.roi_y_start
+                                        best_w_hurdle = int(rw) 
+                                        best_h_hurdle = float(rh) 
+                                        best_angle = float(ang)
+                                        best_vx, best_vy = vx, vy
+                                        best_ratio = fill_ratio
 
             if best_cnt is not None:
                 self.hurdle_lost = 0
@@ -329,7 +339,8 @@ class HurdleDetectorNode(Node):
                 left_y = int(round((self.roi_x_start - best_cx_hurdle) * best_vy / (best_vx + 0.00001) + best_cy_hurdle))
                 right_y = int(round((self.roi_x_end - best_cx_hurdle) * best_vy / (best_vx + 0.00001) + best_cy_hurdle))
                 cv2.line(frame, (self.roi_x_start, left_y), (self.roi_x_end, right_y), self.hurdle_color, 2)
-                cv2.line(frame, (zandi_x, zandi_y), (int(round(zandi_x - math.sin(math.radians(best_angle)) * best_dy)), int(round(zandi_y - math.cos(math.radians(best_angle)) * best_dy))), (0, 0, 255), 2)
+                cv2.line(frame, (zandi_x, zandi_y), (int(round(zandi_x + math.sin(math.radians(best_angle)) * best_dy)), int(round(zandi_y - math.cos(math.radians(best_angle)) * best_dy))), (0, 0, 255), 2)
+                cv2.circle(frame, (zandi_x, int(round(best_cy_hurdle))), 5, (0, 255, 0), -1)
 
                 # 정보 저장
                 self.last_cy_hurdle = best_cy_hurdle
@@ -391,8 +402,9 @@ class HurdleDetectorNode(Node):
                     self.get_logger().info(f"[Hurdle] Jump!") # 일단 임시로 # self 지정하셈
                     self.jump = False
                     self.is_hurdle = False
-                    self.step_in_place = False
-                
+                    self.cy_hurdle_cal = 0
+                    self.last_position_text = f"Jump!"
+
                 else:
                     if result:
                         self.is_hurdle = True
@@ -403,8 +415,29 @@ class HurdleDetectorNode(Node):
                         avg_cy = int(round(np.mean(center_ys)))
                         avg_angle = np.mean(angles)
                         avg_dy = int(round(np.mean(delta_ys)))
+
+                        if avg_cy >= self.limit_half_step:
+                            res = 13 # 스텝인플레이스고고  << forward_half 임시
+                            self.cy_hurdle_cal += self.half_step
+                            self.jump = True
+                            self.get_logger().info(f"[Hurdle] Step in place complete! Prepare to jump!")
+                            self.last_position_text = f"Preparing to jump!"
+
+                        if avg_cy >= self.limit_one_step:
+                            self.cy_hurdle_cal = avg_cy
+                            if avg_angle >= 10:
+                                res = 3
+                                self.cy_hurdle_cal += 10
+                            elif avg_angle <= -10:
+                                res = 2
+                                self.cy_hurdle_cal += 10
+                            else:
+                                res = 6 # 진짜 반발짝만
+                                self.cy_hurdle_cal += self.half_step # 
+                            self.get_logger().info(f"[Hurdle] Half step! | angle= {avg_angle}, dis= {avg_dy}")
+                            self.last_position_text = f"angle= {avg_angle:2f}, dis= {avg_dy} | Half step"
                         
-                        if avg_cy >= self.limit_one_step: # 한 걸음
+                        elif avg_cy >= self.limit_two_step: # 한 걸음
                             self.cy_hurdle_cal = avg_cy
                             if avg_angle >= 10:
                                 res = 3
@@ -415,8 +448,8 @@ class HurdleDetectorNode(Node):
                             else:
                                 res = 12
                                 self.cy_hurdle_cal += self.one_step # << 한 걸음?
-                            self.get_logger().info(f"[Hurdle] Near by! | angle= {avg_angle}, dis= {avg_dy}")
-                            self.step_in_place = True
+                            self.get_logger().info(f"[Hurdle] One step! | angle= {avg_angle}, dis= {avg_dy}")
+                            self.last_position_text = f"angle= {avg_angle:2f}, dis= {avg_dy} | One step"
 
                         else: # 두 걸음
                             self.cy_hurdle_cal = avg_cy
@@ -430,29 +463,38 @@ class HurdleDetectorNode(Node):
                                 res = 27
                                 self.cy_hurdle_cal += self.two_step  # << 두 걸음?
                             self.get_logger().info(f"[Hurdle] Two steps | angle= {avg_angle}, dis= {avg_dy}")
+                            self.last_position_text = f"angle= {avg_angle:2f}, dis= {avg_dy} | Two steps"
                     
                     else:
                         avg_angle = 0
                         if self.is_hurdle:
-                            if self.step_in_place or self.cy_hurdle_cal >= self.limit_jump: # 조금 전진 후 허들 넘기
-                                res = 6 # 스텝인플레이스고고  << forward_half 임시
+                            if self.cy_hurdle_cal >= self.limit_half_step:
+                                res = 13 # 스텝인플레이스고고  << forward_half 임시
                                 self.cy_hurdle_cal = 0
                                 self.jump = True
                                 self.get_logger().info(f"[Hurdle] Step in place complete! Prepare to jump!")
+                                self.last_position_text = f"Preparing to jump!"
+                            elif self.cy_hurdle_cal >= self.limit_one_step: # 조금 전진 후 허들 넘기
+                                res = 6 # 진짜 반스텝
+                                self.cy_hurdle_cal += self.half_step
+                                self.get_logger().info(f"[Hurdle] Miss! | estimated cy= {self.cy_hurdle_cal}")
+                                self.last_position_text = f"Miss! | estimated cy= {self.cy_hurdle_cal} | Half step"
 
                             else: # 중간에 놓친 거 << 추가할 거
                                 res = 12 # 그냥 걸어봐
-                                self.get_logger().info(f"[Hurdle] Miss! | estimated cy= {self.cy_hurdle_cal}")
                                 self.cy_hurdle_cal += self.one_step
+                                self.get_logger().info(f"[Hurdle] Miss! | estimated cy= {self.cy_hurdle_cal}")
+                                self.last_position_text = f"Miss! | estimated cy= {self.cy_hurdle_cal} | One step"
 
                         else: # 라인
                             res = 99 # 평소
                             self.get_logger().info(f"[Hurdle] No hurdle detected")
+                            self.last_position_text = f"No hurdle"
                     
                 # 퍼블리시
                 msg_out = HurdleResult()
                 msg_out.res = res
-                msg_out.angle = abs(avg_angle)
+                msg_out.angle = abs(int(round(avg_angle)))
                 self.hurdle_result_pub.publish(msg_out)
 
                 self.get_logger().info(f"res= {res}")
@@ -465,9 +507,9 @@ class HurdleDetectorNode(Node):
             
         cv2.rectangle(frame, (self.roi_x_start + 1, self.roi_y_start + 1), (self.roi_x_end - 1, self.roi_y_end - 1), self.rect_color, 1)
         cv2.circle(frame, (zandi_x, zandi_y), 5, (255, 0, 255), -1)
-        cv2.line(frame, (zandi_x - zandi_half_width, zandi_y), (zandi_x + zandi_half_width, zandi_y), (255, 0, 255), 2)
+        cv2.line(frame, (self.roi_x_start, zandi_y), (self.roi_x_end, zandi_y), (255, 0, 255), 2)
         
-        cv2.rectangle(frame, (self.roi_x_start + 1, self.limit_one_step), (self.roi_x_end - 1, self.limit_jump), (123, 124, 55), 2)
+        cv2.rectangle(frame, (self.roi_x_start + 1, self.limit_one_step), (self.roi_x_end - 1, self.limit_half_step), (123, 124, 55), 2)
 
         # 딜레이 측정
         elapsed = time.time() - start_time
@@ -491,7 +533,7 @@ class HurdleDetectorNode(Node):
         cv2.imshow('Hurdle Detection', frame)
         cv2.waitKey(1)
 
-def main():
+def main(): 
     rp.init()
     node = HurdleDetectorNode()
     rp.spin(node)
