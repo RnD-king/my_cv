@@ -63,6 +63,8 @@ class HurdleDetectorNode(Node):
         self.cy_hurdle_cal = 0
         self.jump = False
 
+        self.is_first_decision = True
+
         self.first_res = True
 
         self.hurdle_valid_list = []  
@@ -127,7 +129,7 @@ class HurdleDetectorNode(Node):
         self.lab = None      # lab 미리 선언 
 
         # 화면 클릭
-        cv2.namedWindow('Hurdle Detection')
+        cv2.namedWindow('Hurdle Detection', cv2.WINDOW_NORMAL) ##  cv2.WINDOW_NORMAL cv2.WINDOW_NORMAL cv2.WINDOW_NORMAL cv2.WINDOW_NORMAL cv2.WINDOW_NORMAL
         cv2.setMouseCallback('Hurdle Detection', self.on_click) 
 
     def set_roi(self, near: bool):
@@ -156,9 +158,9 @@ class HurdleDetectorNode(Node):
             elif p.name == "limit_two_step": self.limit_two_step = int(p.value)
             elif p.name == "limit_one_step": self.limit_one_step = int(p.value)
             elif p.name == "limit_half_step": self.limit_half_step = int(p.value)
-            elif p.name == "two_step": self.one_step = int(p.value)
-            elif p.name == "one_step": self.two_step = int(p.value)
-            elif p.name == "half_step": self.limit_half_step = int(p.value)
+            elif p.name == "two_step": self.two_step = int(p.value)
+            elif p.name == "one_step": self.one_step = int(p.value)
+            elif p.name == "half_step": self.half_step = int(p.value)
             
             self.lower_lab = np.array([self.l_low, self.a_low, self.b_low ], dtype=np.uint8) # 색공간 변하면 적용
             self.upper_lab = np.array([self.l_high, self.a_high, self.b_high], dtype=np.uint8)
@@ -423,7 +425,7 @@ class HurdleDetectorNode(Node):
                             self.get_logger().info(f"[Hurdle] Step in place complete! Prepare to jump!")
                             self.last_position_text = f"Preparing to jump!"
 
-                        if avg_cy >= self.limit_one_step:
+                        elif avg_cy >= self.limit_one_step:
                             self.cy_hurdle_cal = avg_cy
                             if avg_angle >= 10:
                                 res = 3
@@ -490,7 +492,16 @@ class HurdleDetectorNode(Node):
                             res = 99 # 평소
                             self.get_logger().info(f"[Hurdle] No hurdle detected")
                             self.last_position_text = f"No hurdle"
-                    
+                
+                if self.is_first_decision:
+                    res = 99
+                    self.is_first_decision = False
+                    self.jump = False
+                    self.is_hurdle = False
+                    self.cy_hurdle_cal = 0
+                    self.get_logger().info(f"[Hurdle] First decision, set to no hurdle")
+                    self.last_position_text = f"First decision, no hurdle"
+
                 # 퍼블리시
                 msg_out = HurdleResult()
                 msg_out.res = res
