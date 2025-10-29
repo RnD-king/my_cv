@@ -143,11 +143,11 @@ class LineListenerNode(Node): ##################################################
         self.declare_parameter("orange_v_low_1", 170) # 밝기 50, 255
         self.declare_parameter("orange_v_high_1", 255)
 
-        self.declare_parameter("orange_h_low_2", 1) # 주황 8, 20 < 동방 기준임
+        self.declare_parameter("orange_h_low_2", 8) # 주황 8, 20 < 동방 기준임
         self.declare_parameter("orange_h_high_2", 30)  
-        self.declare_parameter("orange_s_low_2", 100) # 채도  40, 255
+        self.declare_parameter("orange_s_low_2", 40) # 채도  40, 255
         self.declare_parameter("orange_s_high_2", 255)  
-        self.declare_parameter("orange_v_low_2", 150) # 밝기 50, 255
+        self.declare_parameter("orange_v_low_2", 50) # 밝기 50, 255
         self.declare_parameter("orange_v_high_2", 255)
 
         # 파라미터 선언 H
