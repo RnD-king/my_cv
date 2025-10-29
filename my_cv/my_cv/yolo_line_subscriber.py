@@ -322,7 +322,7 @@ class LineListenerNode(Node): ##################################################
                 self.out_text = "In"
             
             if abs(delta_zandi) < self.delta_zandi_min: # 분기 3-1 Out = In  << 여기에 r 계산 각도
-                r = float(np.clip(delta_zandi / 550.0, -1.0, 1.0))
+                r = float(np.clip(delta_zandi / 1500.0, -1.0, 1.0))
                 angle = math.degrees(math.asin(r)) + line_angle
 
                 if abs(angle) <= 7:
@@ -339,7 +339,7 @@ class LineListenerNode(Node): ##################################################
                     status = 98
 
             else: # 분기 3-2 Out = RL << line_angle 이 반대면 무조건 res = 2 or 3 + r 계산값  // 분기 하나 더 넣어서 무조건 회전 하나 추가            
-                r = float(np.clip((delta_zandi - np.sign(delta_zandi)*(self.delta_zandi_min - 50))/ 500.0, -1.0, 1.0))
+                r = float(np.clip((delta_zandi - np.sign(delta_zandi)*(self.delta_zandi_min - 50))/ 1500.0, -1.0, 1.0))
                 angle = math.degrees(math.asin(r)) + line_angle
     
                 if delta_zandi > 0 and line_angle > 0:
