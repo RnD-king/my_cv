@@ -7,405 +7,526 @@ import time
 from rclpy.node import Node
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
-from collections import deque, Counter
-from my_cv_msgs.msg import LinePoint, LinePointsArray, LineResult, MotionEnd # type: ignore
+from collections import Counter
+from robot_msgs.msg import LinePointsArray, LineResult, MotionEnd # type: ignore
 from rcl_interfaces.msg import SetParametersResult
 
-class LineListenerNode(Node):
+camera_width = 640
+camera_height = 480
+
+roi_x_start = int(camera_width * 0 // 5)
+roi_x_end = int(camera_width * 5 // 5)
+roi_y_start = int(camera_height * 0 // 12)
+roi_y_end = int(camera_height * 12 // 12)
+
+zandi_x = int((roi_x_start + roi_x_end) / 2)
+zandi_y = int((roi_y_start + roi_y_end) / 2) + 240
+
+class LineListenerNode(Node): #################################################################### 판단 프레임 수 바꿀 때 yolo_cpp 도 고려해라~~~
     def __init__(self):
         super().__init__('line_subscriber')
-        
-        # 공용 변수
-        self.image_width = 640
-        self.image_height = 480
-
-        self.roi_x_start = int(self.image_width * 1 // 5)  # 초록 박스 관심 구역
-        self.roi_x_end   = int(self.image_width * 4 // 5)
-        self.roi_y_start = int(self.image_height * 1 // 12)
-        self.roi_y_end   = int(self.image_height * 11 // 12)
-
-        # zandi
-        self.zandi_x = int((self.roi_x_start + self.roi_x_end) / 2)
-        self.zandi_y = int(self.image_height - 100)
 
         # 타이머
         self.frame_count = 0
         self.total_time = 0.0
         self.last_report_time = time.time()
-        self.last_avg_text = "AVG: --- ms | FPS: --"
-
         self.line_start_time = None        # 윈도우 시작 시각 (wall-clock)
 
-        self.frames_left = 0       # 남은 프레임 수 < max_len
+        self.last_avg_text = "AVG: --- ms | FPS: --"        
+
         
         self.collecting = False     # 수집 중 여부
-        self.last_motion_state = False
+        self.armed = False               # motion_end 방어~!
+
+        self.window_id = 0
+        self.frame_idx = 0      
+        self.frames_left = 0       # 남은 프레임 수 < collecting_frames
+        
+        # self.last_angle = 0
+        # self.last_line_angle = 0.0
+        # self.last_delta_zandi = 0.0
+        # self.last_status = 0
+        self.last_line_xy = None    
 
         self.status_list = [] # 누적 값 저장
         self.angle_list = []
+        # self.avg_x_list = []
+
+        self.miss_count = 0
+        # self.out_count = 0
 
         self.bridge = CvBridge()
         self.sub = self.create_subscription(  # 중심점 토픽
             LinePointsArray,                   
             'candidates',                   
             self.line_callback, 10)      
-        self.motion_end = self.create_subscription(  # 모션 끝나면 받아올 T/F
+        self.motion_end_sub = self.create_subscription(  # 모션 끝나면 받아올 T/F
             MotionEnd,                   
-            'end',                   
+            '/motion_end',                   
             self.motion_callback, 10)                         
         self.subscription_color = self.create_subscription(  # 이미지 토픽
             Image,
-            '/camera/color/image_raw',  #  640x480 / 15fps
+            '/cam2/color/image_raw',  #  640x480 / 15fps cam2
             self.color_image_callback, 10)
         
         # 파라미터 선언
-        self.declare_parameter("limit_x", 100) # 핑크 라인 두께
-        self.declare_parameter("max_len", 15) # 몇 프레임 동안 보고 판단할 거냐
-        self.declare_parameter("delta_s", 15) # 빨간 점이 얼마나 벗어나야 커브일까
-        self.declare_parameter("vertical", 15) # 직진 판단 각도
+        self.declare_parameter("delta_zandi_min", 140) # 핑크 선 두께
+        self.declare_parameter("collecting_frames", 9) # 몇 프레임 동안 보고 판단할 거냐  << yolo는 15프레임, 정지 5프레임, 탐지는 10프레임만
+        self.declare_parameter("delta_tip_min", 15) # 빨간 점이 얼마나 벗어나야 커브일까
+        self.declare_parameter("vertical", 30) # 직진 판단 각도
         self.declare_parameter("horizontal", 75) # 수평 판단 각도  <<<  아직 안 만듬
+        self.declare_parameter("delta_out", 90) # out 복귀 판단 범위
 
         # 파라미터 적용
-        self.limit_x = self.get_parameter("limit_x").value
-        self.max_len = self.get_parameter("max_len").value
-        self.delta_s = self.get_parameter("delta_s").value
+        self.delta_zandi_min = self.get_parameter("delta_zandi_min").value
+        self.collecting_frames = self.get_parameter("collecting_frames").value
+        self.delta_tip_min = self.get_parameter("delta_tip_min").value
         self.vertical = self.get_parameter("vertical").value
         self.horizontal = self.get_parameter("horizontal").value
+        self.delta_out = self.get_parameter("delta_out").value
         
         self.candidates = [] 
-        self.curve_count = 0
+        
         self.tilt_text = "" # 화면 출력
         self.curve_text = "" # 화면 출력
         self.out_text = "" # 화면 출력
 
-        self.add_on_set_parameters_callback(self.parameter_callback)
+        # self.out_now = False
+        self.last_mean_angle = 0 # 시각화
+        # self.last_avg_x = (roi_x_start + roi_x_end) / 2
+
+        self.add_on_set_parameters_callback(self.param_callback)
 
         # 퍼블리셔
         self.line_result_pub = self.create_publisher(LineResult, '/line_result', 10)
 
-    def parameter_callback(self, params):
-        for param in params:
-            if param.name == "limit_x":
-                if param.value > 0 and param.value < 320:
-                    self.limit_x = param.value
-                else:
-                    return SetParametersResult(successful=False)
-            if param.name == "max_len":
-                if param.value > 0:
-                    self.max_len = param.value
-                else:
-                    return SetParametersResult(successful=False)
-            if param.name == "delta_s":
-                if param.value > 0:
-                    self.delta_s = param.value
-                else:
-                    return SetParametersResult(successful=False)
-            if param.name == "vertical":
-                if 0 < param.value and param.value < self.horizontal:
-                    self.vertical = param.value
-                else:
-                    return SetParametersResult(successful=False)
-            if param.name == "horizontal":
-                if param.value < 90 and param.value > self.vertical:
-                    self.horizontal = param.value
-                else:
-                    return SetParametersResult(successful=False)
+    def param_callback(self, params):
+        for p in params:
+            if p.name == "delta_zandi_min": self.delta_zandi_min = int(p.value)
+            elif p.name == "collecting_frames": self.collecting_frames = int(p.value)
+            elif p.name == "delta_tip_min": self.delta_tip_min = int(p.value)
+            elif p.name == "vertical": self.vertical = int(p.value)
+            elif p.name == "horizontal": self.horizontal = int(p.value)
+            elif p.name == "delta_out": self.delta_out = int(p.value)
+            
         return SetParametersResult(successful=True)
 
-    def line_callback(self, msg: LinePointsArray):  # 좌표 구독
-        self.candidates = [(i.cx, i.cy, i.lost) for i in msg.points]
-        #for idx, (cx, cy, lost) in enumerate(self.candidates):
-        #    self.get_logger().info(f'[{idx}] cx={cx}, cy={cy}, lost={lost}') 잘 받아오고 있나 확인용
+    def motion_callback(self, msg: MotionEnd): # 모션 끝 같이 받아오기 (중복 방지)
+        if bool(msg.motion_end_detect):
+            self.armed = True
+            self.get_logger().info("Subscribed /motion_end !!!!!!!!!!!!!!!!!!!!!!!!")
 
-    def motion_callback(self, msg: MotionEnd): # 모션 끝났다 신호 받으면
-        motion_end = bool(msg.end)
-        rising = (not self.last_motion_state) and motion_end # 직전 값이 0, 지금 값이 1일 때 1 (False -> True)
-        self.last_motion_state = motion_end # 직전 값 갱신
-        if rising and not self.collecting:
-            self.collecting = True  # 탐지 시작해라
-            self.frames_left = self.max_len  # 프레임 초기화
+    def line_callback(self, msg: LinePointsArray): # yolo_cpp에서 토픽 보내면 실핼
+        new_candidates = [(i.cx, i.cy, i.lost) for i in msg.points]  # 먼저 로컬 변수에만
+        if not self.collecting:
+            if not self.armed:
+                return
             
+            self.collecting = True
+            self.armed = False
+            self.frames_left = self.collecting_frames
+            self.window_id += 1
+            
+            # 초기화
+            self.status_list.clear()
+            self.angle_list.clear()
+            # self.avg_x_list.clear()
+            self.frame_idx = 0
+
+            self.line_start_time = time.time()
+
+            self.get_logger().info(f'[Start] Window {self.window_id} | I got {self.collecting_frames} frames')
+
+        # 진짜
+        self.candidates = new_candidates
+        self.frame_idx += 1
+        self.get_logger().info(f"step {self.frame_idx}")
+        for idx, (cx, cy, lost) in enumerate(self.candidates):
+            self.get_logger().info(f'[{idx}] cx={cx}, cy={cy}, lost={lost}')
+
+        line_angle = 0.0 # 라인 직선의 각도
+        angle = 0.0 # 잔디가 회전할 최종 각도
+        delta_zandi = 0 # 라인 직선하고 잔디 중심 사이 거리
+        status = 99 # == res
+
+        if len(self.candidates) >= 3:  # =================================================== I. 세 점 이상 탐지
+            tip_x, tip_y, tip_lost = self.candidates[-1] # 맨 위의 점
+            line_x = np.array([c[0] for c in self.candidates[:-1]], dtype=np.float32) # 나머지 점
+            line_y = np.array([c[1] for c in self.candidates[:-1]], dtype=np.float32)
+            avg_line_x = int(round(np.mean(line_x)))
+            # self.last_avg_x = avg_line_x
+
+            if float(line_x.max() - line_x.min()) < 5.0: # 거의 일직선이면 (계산식 발산 방지)
+                
+                x1 = x2 = avg_line_x # 시각화
+                y1 = roi_y_end
+                y2 = roi_y_start
+
+                line_angle = 0 # tilt
+                delta_tip = float(avg_line_x - tip_x) # 1. curve
+                delta_zandi = float(avg_line_x - zandi_x) # 3. out
+            else: # 일반적인 경우
+                pts = np.stack([line_x, line_y], axis=1)
+                vx, vy, x0, y0 = cv2.fitLine(pts, cv2.DIST_L2, 0, 0.01, 0.01) # 방향 벡터와 선 위의 점으로~
+                vx = float(vx); vy = float(vy); x0 = float(x0); y0 = float(y0)
+                
+                line_angle = math.degrees(math.atan2(vx, -vy))
+                if line_angle >= 90: # 필없
+                    line_angle -= 180
+
+                signed_tip = (tip_x - x0) * vy - (tip_y - y0) * vx
+                signed_zandi = (zandi_x - x0) * vy - (zandi_y - y0) * vx
+                delta_tip = signed_tip / (math.hypot(vx, vy) + 1e-5)
+                delta_zandi = signed_zandi / (math.hypot(vx, vy) + 1e-5)
+                delta_zandi = delta_zandi * abs(line_angle) / line_angle 
+                
+                # 시각화
+                m = vy / vx
+                b = y0 - m * x0
+                if abs(m) > 1:
+                    y1, y2 = roi_y_end, roi_y_start
+                    x1 = int((y1 - b) / m)
+                    x2 = int((y2 - b) / m)
+                else:
+                    x1, x2 = roi_x_end, roi_x_start
+                    y1 = int(m * x1 + b)
+                    y2 = int(m * x2 + b)
+            
+            # 화면 출력
+            if abs(line_angle) < self.vertical:
+                self.tilt_text = "Straight"
+            elif self.horizontal > line_angle > self.vertical:
+                self.tilt_text = "Spin Right"
+            elif -self.horizontal < line_angle < -self.vertical:
+                self.tilt_text = "Spin Left"
+            else: 
+                self.tilt_text = "98"
+            
+            # res 결정
+            if abs(delta_tip) > self.delta_tip_min: # 분기 1-1. Turn = RL
+                angle = math.degrees(math.atan2(tip_x - zandi_x, -(tip_y - zandi_y)))
+                if angle >= 90:
+                    angle -= 180
+
+                if abs(angle) <= 7:
+                    status = 1 # 
+                elif 7 < angle < 20:
+                    status = 30 # 직진하면서 우회전
+                elif -7 > angle > -20:
+                    status = 29 # 직진하면서 좌회전
+                elif self.horizontal > angle >= 20:
+                    status = 3 # 제자리 우회전
+                elif -self.horizontal < angle <= -20:
+                    status = 2 # 제자리 좌회전 
+                else:
+                    status = 98
+
+                self.curve_text = "Turn Left" if (delta_tip * line_angle > 0) else "Turn Right"
+
+            else: # 분기 1-2 Turn = Straight
+                self.curve_text = "Straight"
+                if abs(delta_zandi) < self.delta_zandi_min: # 분기 3-1 Out = In  << 여기에 r 계산 각도값
+                    self.out_text = "In"
+
+                    r = float(np.clip(delta_zandi / 550.0, -1.0, 1.0))
+                    angle = math.degrees(math.asin(r)) + line_angle
+
+                    if abs(angle) <= 7:
+                        status = 1 # 
+                    elif 7 < angle < self.vertical:
+                        status = 30 # 
+                    elif -7 > angle > -self.vertical:
+                        status = 29 #
+                    elif self.horizontal > angle >= self.vertical:
+                        status = 3 # 우회전
+                        angle = min(angle, 25)
+                    elif -self.horizontal < angle <= -self.vertical:
+                        status = 2 # 좌회전 
+                        angle = max(angle, -25)
+                    else:
+                        status = 98
+
+                else: # 분기 3-2 Out = RL << line_angle 이 반대면 무조건 res = 2 or 3 + r 계산값  // 분기 하나 더 넣어서 무조건 회전 하나 추가
+                    self.out_text = "Out Left" if (delta_zandi > 0) else "Out Right"
+                
+                    r = float(np.clip((delta_zandi - np.sign(delta_zandi)*(self.delta_zandi_min - 50))/ 500.0, -1.0, 1.0))
+                    angle = math.degrees(math.asin(r)) + line_angle
+        
+                    if delta_zandi > 0 and line_angle < -4:
+                        status = 3
+                    elif delta_zandi < 0 and line_angle > 4:
+                        status = 2
+                    else:
+                        if abs(angle) <= 7:
+                            status = 1 # 
+                        elif 7 < angle < self.vertical:
+                            status = 30 # 
+                        elif -7 > angle > -self.vertical:
+                            status = 29 #
+                        elif self.horizontal > angle >= self.vertical:
+                            status = 3 # 우회전
+                        elif -self.horizontal < angle <= -self.vertical:
+                            status = 2 # 좌회전 
+                        else:
+                            status = 98
+
+            self.last_line_xy = (int(x1), int(y1), int(x2), int(y2)) # 시각화
+
+        elif len(self.candidates) == 2:  # ==================================================== II. 2점 탐지
+            self.curve_text = "Straight"
+
+            down_x, down_y, down_lost = self.candidates[0]
+            up_x, up_y, up_lost = self.candidates[1]
+            avg_line_x = int(round((down_x + up_x)/2))
+
+            if abs(down_x - up_x) < 5: # 일직선인 경우
+                line_angle = 0
+
+                x1 = x2 = avg_line_x # 시각화
+                y1, y2 = roi_y_end, roi_y_start
+
+                delta_zandi = abs(float(avg_line_x - zandi_x))
+            else: # 일반적인 경우
+                line_angle = math.degrees(math.atan2(up_x - down_x, - up_y + down_y))
+
+                if line_angle > 90: # 필없
+                    line_angle -= 180
+                elif line_angle < -90:
+                    line_angle += 180
+                signed_zandi = (zandi_x - down_x)*(- up_y + down_y) - (zandi_y - down_y)*(up_x - down_x)
+                delta_zandi = signed_zandi / (math.hypot(up_x - down_x, - up_y + down_y) + 1e-5)
+                delta_zandi = delta_zandi * abs(line_angle) / line_angle
+                
+                # 시각화
+                m = (- up_y + down_y) / (up_x - down_x)
+                b = down_y - m * down_x
+                if abs(m) > 1:
+                    y1, y2 = roi_y_end, roi_y_start
+                    x1 = int((y1 - b)/m); x2 = int((y2 - b)/m)
+                else:
+                    x1, x2 = roi_x_end, roi_x_start
+                    y1 = int(m*x1 + b); y2 = int(m*x2 + b)
+
+            if abs(line_angle) < self.vertical:
+                self.tilt_text = "Straight"
+            elif self.horizontal > line_angle > self.vertical:
+                self.tilt_text = "Spin Right"
+            elif -self.horizontal < line_angle < -self.vertical:
+                self.tilt_text = "Spin Left"
+            else: 
+                self.tilt_text = "98"
+
+            if abs(delta_zandi) > self.delta_zandi_min: # 분기 3-1 Out = In  << 여기에 r 계산 각도값
+                self.out_text = "Out Left" if (delta_zandi > 0) else "Out Right"
+            else:
+                self.out_text = "In"
+            
+            if abs(delta_zandi) < self.delta_zandi_min: # 분기 3-1 Out = In  << 여기에 r 계산 각도
+                r = float(np.clip(delta_zandi / 550.0, -1.0, 1.0))
+                angle = math.degrees(math.asin(r)) + line_angle
+
+                if abs(angle) <= 7:
+                    status = 1 # 
+                elif 7 < angle < self.vertical:
+                    status = 30 # 
+                elif -7 > angle > -self.vertical:
+                    status = 29 #
+                elif self.horizontal > angle >= self.vertical:
+                    status = 3 # 우회전
+                elif -self.horizontal < angle <= -self.vertical:
+                    status = 2 # 좌회전 
+                else:
+                    status = 98
+
+            else: # 분기 3-2 Out = RL << line_angle 이 반대면 무조건 res = 2 or 3 + r 계산값  // 분기 하나 더 넣어서 무조건 회전 하나 추가            
+                r = float(np.clip((delta_zandi - np.sign(delta_zandi)*(self.delta_zandi_min - 50))/ 500.0, -1.0, 1.0))
+                angle = math.degrees(math.asin(r)) + line_angle
+    
+                if delta_zandi > 0 and line_angle > 4:
+                    status = 3
+                elif delta_zandi < 0 and line_angle < -4:
+                    status = 2
+                else:
+                    if abs(angle) <= 7:
+                        status = 1 # 
+                    elif 7 < angle < self.vertical:
+                        status = 30 # 
+                    elif -7 > angle > -self.vertical:
+                        status = 29 #
+                    elif self.horizontal > angle >= self.vertical:
+                        status = 3 # 우회전
+                    elif -self.horizontal < angle <= -self.vertical:
+                        status = 2 # 좌회전 
+                    else:
+                        status = 98
+
+            self.last_line_xy = (int(x1), int(y1), int(x2), int(y2))  # 시각화
+
+        else:  # ======================================================================================= III. 1점 이하 탐지
+            self.curve_text = "Miss"
+            self.tilt_text = "Miss"
+            self.out_text = "Miss"
+
+            angle = 0
+            line_angle = 0
+            delta_zandi = 0
+            status = 99 # 탐지 못 하면 99
+
+            self.last_line_xy = None # 시각화
+        # =========================================================================================================
+
+        # 결과 업데이트
+        angle = int(round(angle))
+        self.frames_left -= 1
+        self.status_list.append(status)
+        self.angle_list.append(angle)
+        # self.avg_x_list.append(avg_line_x)
+
+        # 화면용 최신 값 저장
+        # self.last_angle = angle
+        # self.last_line_angle = int(round(line_angle))
+        # self.last_delta_zandi = float(round(delta_zandi,1))
+        # self.last_status = status
+
+        # 15프레임 다 끝나면
+        if self.frames_left <= 0:
+            status_cnt = Counter(self.status_list)
+            max_cnt = max(status_cnt.values())
+            status_candi = [s for s, c in status_cnt.items() if c == max_cnt]
+            res = None
+            for s in reversed(self.status_list):
+                if s in status_candi:
+                    res = s
+                    break
+            angles = [a for s, a in zip(self.status_list, self.angle_list) if s == res]
+            mean_angle = int(round(np.mean(angles))) if angles else 0
+
+            self.last_mean_angle = mean_angle # 시각화
+            # mean_avg_x = int(round(np.mean([a for s, a in zip(self.status_list, self.avg_x_list) if s == res]))) if res != 5 else self.last_avg_x # 계속 예전 값 유지
+            # self.last_avg_x = mean_avg_x
+
+            # if self.out_now:
+            #     if res != 27: # 탈출 성공
+            #         self.out_now = False
+            #         self.out_count = 0
+            #         self.get_logger().info(f"[Line] In! | res= {res}, angle_avg= {mean_angle}")
+            #     else: # 탈출 실패
+            #         self.out_count += 1
+            #         if self.out_count >= 4: # 4연속 탈출 못 했으면 때려쳐라
+            #             self.out_now = False  # 다 초기화 하고 화면 다시 보기
+            #             self.out_count = 0
+            #             res = 99 # 점선 탐지 못 한 셈 쳐
+            #             self.get_logger().info(f"[Line] Still out,, | res= {res}, angle_avg= {mean_angle}")
+            #         else:
+            #             self.get_logger().info(f"[Line] Recovering! | res= {res}, angle_avg= {mean_angle}, out_count= {self.out_count}")
+            # else: # 평소
+            #     if res == 27: # 방금 막 out이 되었다면
+            #         self.out_now = True
+            #         self.out_count += 1
+            #         self.get_logger().info(f"[Line] Out! | res= {res}, angle_avg= {mean_angle}")
+
+            # 몇 번 연속 라인 탐지 못 했을 때 코든데, 이건 decision에서 << ball이랑 겹칠 수도 있어서
+            # if res != 99:  
+            #     self.miss_count = 0
+            #     self.get_logger().info(f"[Line] Found | res= {res}, angle_avg= {mean_angle}, line_angle= {self.last_line_angle}, " # line_angle은 임시
+            #                         f"delta= {self.last_delta_zandi}")
+            # else:
+            #     self.miss_count += 1
+            #     if self.miss_count >= 5:
+            #         self.miss_count = 5 
+            #         res = 5 # 5번 연속으로 점선을 못 찾는다면?
+            #         self.get_logger().info(f"[Line] I totally missed,,, | res= {res}, miss over {self.miss_count} times")
+            #     elif self.miss_count >= 2:
+            #         if self.last_avg_x > (roi_x_start + roi_x_end) / 2 + self.delta_zandi_min:
+            #             res = 3
+            #             mean_angle = 45
+            #             self.get_logger().info(f"[Line] Miss,, maybe right | res= {res}, miss count= {self.miss_count}") # 못 찾았고 이전 평균 라인 x좌표가 오른쪽
+            #         elif self.last_avg_x < (roi_x_start + roi_x_end) / 2 - self.delta_zandi_min:
+            #             res = 2
+            #             mean_angle = -45
+            #             self.get_logger().info(f"[Line] Miss,, maybe left | res= {res}, miss count= {self.miss_count}") # 못 찾았고 이전 평균 라인 x좌표가 왼쪽
+            #         else:
+            #             res = 5
+            #             self.get_logger().info(f"[Line] Miss | res= {res}, miss count= {self.miss_count}") # 그것도 아닌데 못 찾았으면 일단 뒤로가기
+            #     else:
+            #         res = 5
+            #         self.get_logger().info(f"[Line] Miss | res= {res}, miss count= {self.miss_count}") # 한 번 못 찾았으면 일단 뒤로가기
+            
+            if res == 98: # 여긴 임시용 (직선 수평이면 다시 보기)
+                res = 99
+
+            process_time = (time.time() - self.line_start_time) / self.collecting_frames if self.line_start_time is not None else 0.0
+
+            # 퍼블리시
+            msg_out = LineResult()
+            msg_out.res = res
+            msg_out.angle = abs(mean_angle)
+            self.line_result_pub.publish(msg_out)
+            self.get_logger().info(f'frames= {len(self.status_list)}, wall= {process_time*1000:.1f} ms')
+
+            # 리셋
+            self.collecting = False
+            self.frames_left = 0
+            self.candidates = []
+            self.last_line_xy = None     # 시각화
+            self.frame_idx = 0
+
             self.out_text = ""
             self.curve_text = ""
             self.tilt_text = ""
 
-            self.status_list.clear()
-            self.angle_list.clear()
-
-            self.line_start_time = time.time()
-            
-            self.get_logger().info(f'[Line] Start collecting {self.max_len} frames')
-
-    def color_image_callback(self, msg): # 이미지 받아오기
-        
-        line_angle = None # 직선 각도 (맨 위의 점 제외)
-        angle = None # 잔디가 회전해야할 각도
+    def color_image_callback(self, msg): # 단순 출력용 >> 실제 쓸 땐 다 주석처리~
         start_time = time.time()
+        cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+        roi = cv_image[roi_y_start:roi_y_end, roi_x_start:roi_x_end]
+        step_text = f"{self.frame_idx}/{self.collecting_frames}"
 
-        cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding = 'bgr8')
-        roi = cv_image[self.roi_y_start:self.roi_y_end, self.roi_x_start:self.roi_x_end]
-
-        if self.collecting: # 모션이 끝났다고 신호 받으면 시작
-            # 1. 위치 판단
-            if len(self.candidates) >= 3:  #========================================================================================= I. 세 점 이상 탐지
-                # 정렬)
-                tip_x, tip_y, tip_lost = self.candidates[-1] # 맨위
-                cv2.circle(roi, (tip_x - self.roi_x_start, tip_y - self.roi_y_start), 4, (0,255,255) if tip_lost > 0 else (0,0,255), -1)
-
-                for acx, acy, ac_lost in self.candidates[:-1]: # 나머지 밑에
-                    color = (0, 255, 255) if ac_lost > 0 else (255, 0, 0)
-                    cv2.circle(roi, (acx - self.roi_x_start, acy - self.roi_y_start), 3, color, 2 if ac_lost > 0 else -1)
-
-                line_x = np.array([c[0] for c in self.candidates[:-1]],dtype = np.float32)
-                line_y = np.array([c[1] for c in self.candidates[:-1]],dtype = np.float32)
-                avg_line_x = int(round(np.mean(line_x)))  # 1. out
-
-                if float(line_x.max() - line_x.min()) < 2.0:  # 일직선인 경우
-                    x1 = x2 = avg_line_x
-                    y1, y2 = self.roi_y_end, self.roi_y_start # x1, x2, y1, y2는 모두 직선 시각화
-                    line_angle = 0  # 2. tilt
-                    delta = float(avg_line_x - tip_x)  # 3. curve
-
-                else: # 일반적인 경우
-                    pts = np.stack([line_x, line_y], axis = 1)  # (N,2)
-                    vx, vy, x0, y0 = cv2.fitLine(pts, cv2.DIST_L2, 0, 0.01, 0.01)
-                    vx = float(vx); vy = float(vy); x0 = float(x0); y0 = float(y0)
-                    # 각도/기울기
-                    m = vy / (vx if abs(vx) > 1e-9 else 1e-9)
-                    line_angle = math.degrees(math.atan2(vy, vx)) - 90  # 2. tilt
-                    # tip 좌표로부터 커브 판단
-                    signed = (float(tip_x) - x0) * vy - (float(tip_y) - y0) * vx
-                    delta = signed / (math.hypot(vx, vy) + 1e-5)  # 3. curve
-
-                    b = y0 - m * x0
-                    if abs(m) > 1:
-                        y1, y2 = self.roi_y_end, self.roi_y_start
-                        x1 = int((y1 - b) / m)
-                        x2 = int((y2 - b) / m)
-                    else:
-                        x1, x2 = self.roi_x_end, self.roi_x_start
-                        y1 = int(m * x1 + b)
-                        y2 = int(m * x2 + b)
-                #-------------------------------------------------------------------------------------------------------#
-                if abs(delta) > self.delta_s:  # 분기 1-1. turn  =  RL 
-                    angle = math.degrees(math.atan2(-(tip_y - self.zandi_y), tip_x - self.zandi_x)) - 90  # tip_angle
-                    status = 3 # turn
-                    if delta > 0:
-                        self.curve_text = "Turn Left"
-                    else:
-                        self.curve_text = "Turn Right"
-
-                    if abs(avg_line_x-self.zandi_x) < self.limit_x:  # 분기 2-1. out  =  Straight
-                        self.out_text = "Straight"
-
-                        if abs(line_angle) < self.vertical:  # 분기 3-1. tilt = Straight
-                            self.tilt_text = "Straight"
-                        elif self.horizontal > line_angle > self.vertical:  # 분기 3-2. tilt = Left
-                            self.tilt_text = "Spin Left"
-                        elif -self.horizontal < line_angle < -self.vertical:  # 분기 3-3. tilt = Right
-                            self.tilt_text = "Spin Right"
-                    else:  # 분기 2-2. out  =  RL
-                        if avg_line_x - self.zandi_x > 0:
-                            self.out_text = "Out Left"
-                        else:
-                            self.out_text = "Out Right"
-                        
-                        if abs(line_angle) < self.vertical: 
-                            self.tilt_text = "Straight"
-                        elif self.horizontal > line_angle > self.vertical:
-                            self.tilt_text = "Spin Left"
-                        elif -self.horizontal < line_angle < -self.vertical:
-                            self.tilt_text = "Spin Right"
-
-                else:  # 분기 1-2. turn  =  Straight
-                    self.curve_text = "Straight"
-                    if abs(avg_line_x - self.zandi_x) < self.limit_x:  # 분기 2-1. out  =  Straight
-                        self.out_text = "Straight"
-                        if abs(line_angle) < self.vertical:  # 분기 3. tilt  =  Straight
-                            angle = 0
-                            self.tilt_text = "Straight"
-                            status = 1 # straight
-                        elif self.horizontal > line_angle > self.vertical:
-                            angle = line_angle
-                            status = 2 # spin
-                            self.tilt_text = "Spin Left"
-                        elif -self.horizontal < line_angle < -self.vertical:
-                            angle = line_angle
-                            status = 2 # spin
-                            self.tilt_text = "Spin Right"
-                        # else: << 수평선
-                    else:  # 분기 2-2. out  =  RL
-                        if avg_line_x - self.zandi_x > 0:
-                            self.out_text = "Out Left"
-                        else:
-                            self.out_text = "Out Right"
-                        angle = math.degrees(math.asin(self.zandi_x - avg_line_x) / 60.0)  # 60은 한번 걸을 때 픽셀 수 대충 넣자
-                        status = 2 # spin
-                        
-                        if abs(line_angle) < self.vertical:  # 분기 3. tilt  =  Straight
-                            self.tilt_text = "Straight"
-                        elif self.horizontal > line_angle > self.vertical:
-                            angle += line_angle
-                            self.tilt_text = "Spin Left"
-                        elif -self.horizontal < line_angle < -self.vertical:
-                            angle += line_angle
-                            self.tilt_text = "Spin Right"
-
-                # 시각화
-                cv2.line(roi, (int(x1 - self.roi_x_start), int(y1 - self.roi_y_start)), (int(x2 - self.roi_x_start), int(y2 - self.roi_y_start)), (255, 0, 0), 2)
-
-            elif len(self.candidates) == 2:  #=============================================================================================== II. 두 점 탐지
-                # 정렬
-                self.curve_text = "Straight" # 커브길 판단 X
-                down_x, down_y, down_lost = self.candidates[0] # 아래
-                up_x, up_y, up_lost = self.candidates[1] # 위
-                cv2.circle(roi, (down_x - self.roi_x_start, down_y - self.roi_y_start), 3, (0, 255, 255) if down_lost > 0 else (0, 0, 255), 2 if down_lost > 0 else -1)
-                cv2.circle(roi, (up_x - self.roi_x_start, up_y - self.roi_y_start), 3, (0, 255, 255) if up_lost > 0 else (255, 0, 0), 2 if up_lost > 0 else -1)
-
-                avg_x = int(round((down_x + up_x) / 2)) # 1. out
-
-                if abs(down_x - up_x) < 2:  # 일직선인 경우
-                    line_angle = 0 # 2. tilt
-                    x1 = x2 = avg_x
-                    y1, y2 = self.roi_y_end, self.roi_y_start
-                else:  # 일반적인 경우
-                    m = (up_y - down_y) / ((up_x - down_x) if abs(up_x - down_x) > 1e-9 else 1e-9)
-                    b = down_y - m * down_x
-                    line_angle = math.degrees(math.atan2(up_y - down_y, up_x - down_x)) - 90 # 2. tilt
-                    if abs(m) > 1:
-                        y1, y2 = self.roi_y_end, self.roi_y_start
-                        x1 = int((y1 - b) / m)
-                        x2 = int((y2 - b) / m)
-                    else:
-                        x1, x2 = self.roi_x_end, self.roi_x_start
-                        y1 = int(m * x1 + b)
-                        y2 = int(m * x2 + b)
-                #----------------------------------------------------------------------------------------------------------#
-                if abs(avg_x - self.zandi_x) < self.limit_x:  # 분기 1-1. out  =  Straight
-                    self.out_text = "Straight"
-                    if abs(line_angle) < self.vertical:  # 분기 2-1. tilt  =  Straight
-                        angle = 0
-                        self.tilt_text = "Straight"
-                        status = 1 # straight
-                    elif self.horizontal > line_angle > self.vertical:  # 분기 2-2. tilt  =  Left
-                        angle = line_angle
-                        status = 2 # spin
-                        self.tilt_text = "Spin Left"
-                    elif -self.horizontal < line_angle < -self.vertical:  # 분기 2-3. tilt  =  Right
-                        angle = line_angle
-                        status = 2 # spin
-                        self.tilt_text = "Spin Right"
-                    # else: << 수평선
-
-                else:  # 분기 1-2. out  =  RL
-                    if avg_x-self.zandi_x > 0:
-                        self.out_text = "Out Left"
-                    else:
-                        self.out_text = "Out Right"
-                    r = float(np.clip((avg_x - self.zandi_x) / 60.0, -1.0, 1.0))
-                    angle = math.degrees(math.asin(r))  # 60은 한번 걸을 때 픽셀 수 대충 넣자
-                    status = 2 # spin
-                    
-                    if abs(line_angle) < self.vertical:  # 분기 2. tilt  =  Straight
-                        self.tilt_text = "Straight"
-                    elif self.horizontal > line_angle > self.vertical:
-                        angle += line_angle
-                        self.tilt_text = "Spin Left"
-                    elif -self.horizontal < line_angle < -self.vertical:
-                        angle += line_angle
-                        self.tilt_text = "Spin Right"
-
-                cv2.line(roi, (int(x1 - self.roi_x_start), int(y1 - self.roi_y_start)), (int(x2 - self.roi_x_start), int(y2 - self.roi_y_start)), (255, 0, 0), 2)
-
-            else:  #================================================================================================================== 3. 점 1개 or 탐지 실패
-                self.curve_text = "Miss"
-                self.tilt_text = "Miss"
-                self.out_text = "Miss"
-                angle = 999
-                status = 4 # retry
-            #=======================================================================================================================================================
-
-            self.frames_left -= 1
-            self.status_list.append(status) # 결과 저장
-            self.angle_list.append(angle)
-
-            if self.frames_left <= 0: # 15 프레임 지났으면
-                cnt=Counter(self.status_list)
-                mode_status=max(cnt.items(), key=lambda kv:kv[1])[0]  # 가장 많이 나온 status와
-                angles=[a for s,a in zip(self.status_list,self.angle_list) if s==mode_status]
-                mean_angle=float(np.mean(angles))  # 그 status에서의 각도 평균
-                if abs(mean_angle) < 15: # 만약 회전해야할 각도가 너무 작으면 (out이랑 tilt가 부호만 반대로 거의 같을 때)
-                    res = 1 # 그냥 직진 하셈
-
-                process_time = (time.time() - self.line_start_time) / self.max_len if self.line_start_time is not None else 0.0
-
-                if mode_status != 4:
-                    if mode_status == 1:  # 직진 SSS (SLR SRL)
-                        res = 1
-                    elif mode_status == 2 and mean_angle > 0: # 왼쪽으로 회전해라 SLS SSL SLL (SLR SRL)
-                        res = 2
-                    elif mode_status == 2 and mean_angle < 0: # 오른쪽으로 회전해라 SRS SSR SRR (SLR SRL)
-                        res = 3
-                    elif mode_status == 3 and mean_angle > 0: # 왼쪽 커브길이다 Lxx
-                        res = 4
-                    elif mode_status == 3 and mean_angle < 0: # 오른쪽 커브길이다 Rxx
-                        res = 5
-                    self.get_logger().info(f"[Line] Window done: res={res}, angle_avg={mean_angle:.2f}, frames={len(self.status_list)}, "
-                                           f"wall={process_time*1000:.1f} ms")
+        if self.candidates is not None:
+            # 후보 점 시각화 (최근 candidates 기준)
+            for i, (cx, cy, lost) in enumerate(self.candidates):
+                if lost > 0:
+                    color = (0, 255, 255)
                 else:
-                    res = 99
-                    self.get_logger().info(f"[Line] Window done: res={res}, angle_avg=None, frames={len(self.status_list)}, "
-                                           f"wall={process_time*1000:.1f} ms")
+                    if i == len(self.candidates) - 1:
+                        color = (0, 0, 255)
+                    else:
+                        color = (255, 0, 0)
+                cv2.circle(roi, (cx - roi_x_start, cy - roi_y_start), 3, color, -1)
 
-                # 퍼블리시
-                msg_out = LineResult()
-                msg_out.res = res
-                msg_out.angle = mean_angle
-                self.line_result_pub.publish(msg_out)
-                
-                self.collecting = False # 초기화
-                self.frames_left = 0
-            
-            #------------------------------------------------------------------------------------------------------------  출력
+            # 마지막 계산된 직선
+            if self.last_line_xy is not None:
+                x1, y1, x2, y2 = self.last_line_xy
+                cv2.line(roi, (int(x1 - roi_x_start), int(y1 - roi_y_start)),
+                            (int(x2 - roi_x_start), int(y2 - roi_y_start)), (255, 0, 0), 2)
 
-            cv2.putText(cv_image, f"Rotate: {angle}", (10, 60),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2, cv2.LINE_AA)
-            cv2.putText(cv_image, f"Tilt: {self.tilt_text}", (10, 90),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 255), 2, cv2.LINE_AA)
-            cv2.putText(cv_image, f"Curve: {self.curve_text}", (10, 120),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 255), 2, cv2.LINE_AA)
-            cv2.putText(cv_image, f"Out: {self.out_text}", (10, 150),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 255), 2, cv2.LINE_AA)
+            cv2.putText(cv_image, f"Step: {step_text}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,0), 2)
 
-        else: # 모션 중,,,
-            cv2.putText(cv_image, "Idle", (10, 60),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2, cv2.LINE_AA)
-            
+        # HUD 텍스트 (마지막 계산 결과)
+        cv2.putText(cv_image, f"Rotate: {self.last_mean_angle}", (10, 90),  cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,0), 2)
+        cv2.putText(cv_image, f"Tilt: {self.tilt_text}", (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,200,255), 2)
+        cv2.putText(cv_image, f"Curve: {self.curve_text}", (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,200,255), 2)
+        cv2.putText(cv_image, f"Out: {self.out_text}", (10, 180), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,200,255), 2)
 
-        cv_image[self.roi_y_start:self.roi_y_end, self.roi_x_start:self.roi_x_end] = roi  # 전체화면
-        cv2.rectangle(cv_image, (self.roi_x_start - 1, self.roi_y_start - 1), (self.roi_x_end + 1, self.roi_y_end), (0, 255, 0), 1) # ROI 구역 표시
-        cv2.line(cv_image, (self.zandi_x - self.limit_x, self.roi_y_start), (self.zandi_x - self.limit_x, self.roi_y_end), (255, 22, 255), 1)
-        cv2.line(cv_image, (self.zandi_x + self.limit_x, self.roi_y_start), (self.zandi_x + self.limit_x, self.roi_y_end), (255, 22, 255), 1)
-        cv2.circle(cv_image, (self.zandi_x, self.zandi_y), 5, (255, 255, 255), -1)
-        #-------------------------------------------------------------------------------------------------- 프레임 처리 시간 측정
+        # ROI/잔디 기준 시각화
+        cv_image[roi_y_start:roi_y_end, roi_x_start:roi_x_end] = roi
+        cv2.rectangle(cv_image, (roi_x_start + 1, roi_y_start + 1), (roi_x_end - 1, roi_y_end - 1), (0, 255, 0), 1)
+        cv2.circle(cv_image, (zandi_x, zandi_y), 5, (111,255,111), -1)
+        cv2.circle(cv_image, (zandi_x, zandi_y), self.delta_zandi_min, (255,22,255), 1)
+        cv2.circle(cv_image, (zandi_x, zandi_y), self.delta_out, (255,22, 22), 1)
 
+        # PING/FPS
         elapsed = time.time() - start_time
         self.frame_count += 1
         self.total_time += elapsed
-        
-        if time.time() - self.last_report_time >= 1.0:  # 1초마다 평균 계산
+        if time.time() - self.last_report_time >= 1.0:
             avg_time = self.total_time / self.frame_count
             avg_fps = self.frame_count / (time.time() - self.last_report_time)
             self.last_avg_text = f"PING: {avg_time*1000:.2f}ms | FPS: {avg_fps:.2f}"
-            
-            self.frame_count = 0  # 초기화
-            self.total_time = 0.0
-            self.last_report_time = time.time()
-
-        cv2.putText(cv_image, self.last_avg_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-
-        cv2.imshow("Line", cv_image)  # 이미지
-        cv2.waitKey(1)
+            self.frame_count = 0; self.total_time = 0.0; self.last_report_time = time.time()
+        
+        cv2.putText(cv_image, self.last_avg_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,0), 2)
+        cv2.imshow("Line", cv_image)
+        cv2.waitKey(1)       
 
 def main():
     rp.init()
