@@ -374,7 +374,7 @@ class LineListenerNode(Node): ##################################################
 
             self.last_line_xy = None # 시각화
         # =========================================================================================================
-
+        self.get_logger().info(f'line angle= {int(line_angle)}, delta= {int(delta_zandi)}')
         # 결과 업데이트
         angle = int(round(angle))
         self.frames_left -= 1
