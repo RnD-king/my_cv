@@ -489,7 +489,7 @@ class LineListenerNode(Node): ##################################################
                         cxs = [a for s, a in zip(self.ball_valid_list, self.ball_cx_list) if s == result and a is not None]
                         cys = [a for s, a in zip(self.ball_valid_list, self.ball_cy_list) if s == result and a is not None]
                         dists = [a for s, a in zip(self.ball_valid_list, self.ball_dis_list) if s == result and a is not None]
-                        avg_cx = int(round(np.mean(cxs)))
+                        avg_cx = int(round(np.mean(cxs))) + 40
                         avg_cy = int(round(np.mean(cys)))
                         avg_dis = np.mean(dists) * self.depth_scale
 
